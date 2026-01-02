@@ -86,6 +86,10 @@ pub struct Args {
     /// Network Statistics Save Path
     #[arg(long)]
     pub network_save_path: Option<String>,
+
+    /// Network Statistics Monthly Reset Day (1-31)
+    #[arg(long, default_value_t = 1)]
+    pub network_reset_day: u8,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -95,6 +99,7 @@ pub struct NetworkConfig {
     pub network_interval: u32,
     pub network_interval_number: u32,
     pub network_save_path: String,
+    pub network_reset_day: u8,
 }
 
 impl Args {
@@ -114,6 +119,16 @@ impl Args {
                 }
             };
         }
+
+        // Validate network_reset_day range
+        if args.network_reset_day < 1 || args.network_reset_day > 31 {
+            error!(
+                "network_reset_day must be between 1 and 31, got {}",
+                args.network_reset_day
+            );
+            std::process::exit(1);
+        }
+
         args
     }
     pub fn network_config(&self) -> NetworkConfig {
@@ -180,6 +195,7 @@ impl Args {
             network_interval: self.network_interval,
             network_interval_number: self.network_interval_number,
             network_save_path: path,
+            network_reset_day: self.network_reset_day,
         }
     }
 }
@@ -254,6 +270,7 @@ impl Display for Args {
                 "    Save Interval: {} cycles",
                 self.network_interval_number
             )?;
+            writeln!(f, "    Monthly Reset Day: {}", self.network_reset_day)?;
             if let Some(save_path) = &self.network_save_path {
                 writeln!(f, "    Save Path: {}", save_path)?;
             }
