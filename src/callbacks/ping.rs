@@ -126,7 +126,7 @@ pub async fn ping_target(utf8_str: &str) -> Result<PingEventCallback, String> {
         "http" => {
             let start_time = Instant::now();
 
-            #[cfg(feature = "ureq-support")]
+            #[cfg(all(feature = "ureq-support", not(feature = "nyquest-support")))]
             let result = ureq::get(&ping_event.ping_target) // Avoid cloning
                 .header("User-Agent", "curl/11.45.14")
                 .call()
@@ -139,6 +139,9 @@ pub async fn ping_target(utf8_str: &str) -> Result<PingEventCallback, String> {
                 let request = Request::get(ping_event.ping_target);
                 client.request(request).is_ok()
             };
+
+            #[cfg(not(any(feature = "ureq-support", feature = "nyquest-support")))]
+            let result = false;
 
             let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
             let finished_at = now.format(&Rfc3339).unwrap_or_default();

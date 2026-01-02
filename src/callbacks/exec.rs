@@ -66,7 +66,8 @@ pub async fn exec_command(
     };
 
     let json_string = json::to_string(&reply);
-    #[cfg(feature = "ureq-support")]
+
+    #[cfg(all(feature = "ureq-support", not(feature = "nyquest-support")))]
     {
         use crate::utils::create_ureq_agent;
         let agent = create_ureq_agent(*ignore_unsafe_cert);
@@ -98,5 +99,10 @@ pub async fn exec_command(
         } else {
             Err("Unable to connect server".to_string())
         }
+    }
+
+    #[cfg(not(any(feature = "ureq-support", feature = "nyquest-support")))]
+    {
+        Err("No HTTP client feature enabled".to_string())
     }
 }

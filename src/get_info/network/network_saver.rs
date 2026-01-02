@@ -83,10 +83,10 @@ fn should_reset_traffic(last_reset_month: u8, reset_day: u8) -> bool {
 struct NetworkInfo {
     config: NetworkConfig,
     boot_id: String,
-    source_tx: u64,
-    source_rx: u64,
-    latest_tx: u64,
-    latest_rx: u64,
+    boot_source_tx: u64,      // Current boot's baseline traffic
+    boot_source_rx: u64,
+    accumulated_tx: u64,       // Accumulated traffic in current monthly period (across reboots)
+    accumulated_rx: u64,
     last_reset_month: u8,
 }
 
@@ -111,10 +111,10 @@ impl NetworkInfo {
         append_line!("network_save_path", self.config.network_save_path);
 
         append_line!("boot_id", self.boot_id);
-        append_line!("source_tx", self.source_tx);
-        append_line!("source_rx", self.source_rx);
-        append_line!("latest_tx", self.latest_tx);
-        append_line!("latest_rx", self.latest_rx);
+        append_line!("boot_source_tx", self.boot_source_tx);
+        append_line!("boot_source_rx", self.boot_source_rx);
+        append_line!("accumulated_tx", self.accumulated_tx);
+        append_line!("accumulated_rx", self.accumulated_rx);
         append_line!("last_reset_month", self.last_reset_month);
 
         output
@@ -129,10 +129,10 @@ impl NetworkInfo {
         let mut calibration_rx = None;
         let mut network_save_path = None;
         let mut boot_id = None;
-        let mut source_tx = None;
-        let mut source_rx = None;
-        let mut latest_tx = None;
-        let mut latest_rx = None;
+        let mut boot_source_tx = None;
+        let mut boot_source_rx = None;
+        let mut accumulated_tx = None;
+        let mut accumulated_rx = None;
         let mut last_reset_month = None;
 
         for (line_num, line) in input.lines().enumerate() {
@@ -176,10 +176,10 @@ impl NetworkInfo {
                 }
                 "network_save_path" => network_save_path = Some(value.to_string()),
                 "boot_id" => boot_id = Some(value.to_string()),
-                "source_tx" => source_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "source_rx" => source_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "latest_tx" => latest_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "latest_rx" => latest_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
+                "boot_source_tx" => boot_source_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
+                "boot_source_rx" => boot_source_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
+                "accumulated_tx" => accumulated_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
+                "accumulated_rx" => accumulated_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
                 "last_reset_month" => last_reset_month = Some(value.parse().map_err(|_| parse_err("u8"))?),
                 _ => {}
             }
@@ -197,10 +197,10 @@ impl NetworkInfo {
                 network_save_path: network_save_path.ok_or("Missing field: network_save_path")?,
             },
             boot_id: boot_id.ok_or("Missing field: boot_id")?,
-            source_tx: source_tx.ok_or("Missing field: source_tx")?,
-            source_rx: source_rx.ok_or("Missing field: source_rx")?,
-            latest_tx: latest_tx.ok_or("Missing field: latest_tx")?,
-            latest_rx: latest_rx.ok_or("Missing field: latest_rx")?,
+            boot_source_tx: boot_source_tx.ok_or("Missing field: boot_source_tx")?,
+            boot_source_rx: boot_source_rx.ok_or("Missing field: boot_source_rx")?,
+            accumulated_tx: accumulated_tx.ok_or("Missing field: accumulated_tx")?,
+            accumulated_rx: accumulated_rx.ok_or("Missing field: accumulated_rx")?,
             last_reset_month: last_reset_month.ok_or("Missing field: last_reset_month")?,
         })
     }
@@ -244,10 +244,10 @@ async fn get_or_init_latest_network_info(
         let network_info = NetworkInfo {
             config: network_config.clone(),
             boot_id: new_boot_id.clone(),
-            source_tx: 0,
-            source_rx: 0,
-            latest_tx: 0,
-            latest_rx: 0,
+            boot_source_tx: 0,
+            boot_source_rx: 0,
+            accumulated_tx: 0,
+            accumulated_rx: 0,
             last_reset_month: get_current_month(),
         };
         rewrite_network_info_file(&mut file, network_info.encode())
@@ -279,10 +279,10 @@ async fn get_or_init_latest_network_info(
             let network_info = NetworkInfo {
                 config: network_config.clone(),
                 boot_id: new_boot_id.clone(),
-                source_tx: 0,
-                source_rx: 0,
-                latest_tx: 0,
-                latest_rx: 0,
+                boot_source_tx: 0,
+                boot_source_rx: 0,
+                accumulated_tx: 0,
+                accumulated_rx: 0,
                 last_reset_month: get_current_month(),
             };
             rewrite_network_info_file(&mut file, network_info.encode())
@@ -298,10 +298,10 @@ async fn get_or_init_latest_network_info(
                 let network_info = NetworkInfo {
                     config: network_config.clone(),
                     boot_id: raw_network_info.boot_id,
-                    source_tx: raw_network_info.source_tx,
-                    source_rx: raw_network_info.source_rx,
-                    latest_tx: raw_network_info.latest_tx,
-                    latest_rx: raw_network_info.latest_rx,
+                    boot_source_tx: raw_network_info.boot_source_tx,
+                    boot_source_rx: raw_network_info.boot_source_rx,
+                    accumulated_tx: raw_network_info.accumulated_tx,
+                    accumulated_rx: raw_network_info.accumulated_rx,
                     last_reset_month: raw_network_info.last_reset_month,
                 };
                 rewrite_network_info_file(&mut file, network_info.encode())
@@ -315,17 +315,18 @@ async fn get_or_init_latest_network_info(
         }
     };
 
-    // Handle system reboot: merge latest traffic into source
+    // Handle system reboot: merge current boot traffic into accumulated
     let new_network_info = if cfg!(target_os = "linux") && !new_boot_id.is_empty() {
         if raw_network_info.boot_id != new_boot_id {
             info!("System reboot detected, merging traffic data");
             let network_info = NetworkInfo {
                 config: raw_network_info.config,
                 boot_id: new_boot_id,
-                source_tx: raw_network_info.source_tx + raw_network_info.latest_tx,
-                source_rx: raw_network_info.source_rx + raw_network_info.latest_rx,
-                latest_tx: 0,
-                latest_rx: 0,
+                boot_source_tx: 0,  // New boot starts from 0
+                boot_source_rx: 0,
+                // Preserve current period traffic across reboot (but not calibration)
+                accumulated_tx: raw_network_info.accumulated_tx,
+                accumulated_rx: raw_network_info.accumulated_rx,
                 last_reset_month: raw_network_info.last_reset_month,
             };
             rewrite_network_info_file(&mut file, network_info.encode())
@@ -340,10 +341,11 @@ async fn get_or_init_latest_network_info(
         let network_info = NetworkInfo {
             config: raw_network_info.config,
             boot_id: new_boot_id,
-            source_tx: raw_network_info.source_tx + raw_network_info.latest_tx,
-            source_rx: raw_network_info.source_rx + raw_network_info.latest_rx,
-            latest_tx: 0,
-            latest_rx: 0,
+            boot_source_tx: 0,  // Reset to 0 on each program start
+            boot_source_rx: 0,
+            // Preserve accumulated traffic
+            accumulated_tx: raw_network_info.accumulated_tx,
+            accumulated_rx: raw_network_info.accumulated_rx,
             last_reset_month: raw_network_info.last_reset_month,
         };
         rewrite_network_info_file(&mut file, network_info.encode())
@@ -393,13 +395,18 @@ pub async fn network_saver(
                 network_info.config.reset_day, effective_reset_day, current_month
             );
 
+            // Reset config with calibration cleared
+            let mut new_config = network_info.config.clone();
+            new_config.calibration_tx = 0;
+            new_config.calibration_rx = 0;
+
             network_info = NetworkInfo {
-                config: network_info.config.clone(),
+                config: new_config,
                 boot_id: network_info.boot_id.clone(),
-                source_tx: total_up,  // Set current system traffic as new baseline
-                source_rx: total_down,
-                latest_tx: 0,         // Reset latest to 0
-                latest_rx: 0,
+                boot_source_tx: total_up,  // Set current system traffic as new baseline
+                boot_source_rx: total_down,
+                accumulated_tx: 0,         // Reset accumulated to 0
+                accumulated_rx: 0,
                 last_reset_month: current_month,
             };
 
@@ -407,27 +414,36 @@ pub async fn network_saver(
             if let Err(e) = rewrite_network_info_file(&mut file, network_info.encode()).await {
                 error!("Failed to write network traffic info file after reset: {e}");
             } else {
-                info!("Traffic statistics reset completed");
+                info!("Traffic statistics reset completed (calibration also reset to 0)");
             }
-        } else {
-            // Normal update: just update latest traffic
-            network_info.latest_tx = total_up.saturating_sub(network_info.source_tx);
-            network_info.latest_rx = total_down.saturating_sub(network_info.source_rx);
         }
 
         save_counter += 1;
 
         // Periodically save to disk (every 10 intervals by default)
         if save_counter >= 10 {
+            // Merge current boot traffic into accumulated before saving
+            let current_boot_tx = total_up.saturating_sub(network_info.boot_source_tx);
+            let current_boot_rx = total_down.saturating_sub(network_info.boot_source_rx);
+
+            network_info.accumulated_tx += current_boot_tx;
+            network_info.accumulated_rx += current_boot_rx;
+            network_info.boot_source_tx = total_up;
+            network_info.boot_source_rx = total_down;
+
             if let Err(e) = rewrite_network_info_file(&mut file, network_info.encode()).await {
                 error!("Failed to write network traffic info file: {e}");
             }
             save_counter = 0;
         }
 
+        // Calculate current boot traffic for display
+        let current_boot_tx = total_up.saturating_sub(network_info.boot_source_tx);
+        let current_boot_rx = total_down.saturating_sub(network_info.boot_source_rx);
+
         // Send total traffic including calibration values to the main loop
-        let total_tx = network_info.latest_tx + network_info.config.calibration_tx;
-        let total_rx = network_info.latest_rx + network_info.config.calibration_rx;
+        let total_tx = network_info.accumulated_tx + current_boot_tx + network_info.config.calibration_tx;
+        let total_rx = network_info.accumulated_rx + current_boot_rx + network_info.config.calibration_rx;
 
         if let Err(e) = tx.send((total_tx, total_rx)).await {
             error!("Failed to send traffic data: {e}");
