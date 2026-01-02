@@ -203,7 +203,7 @@ async fn get_or_init_latest_network_info(
             source_rx: 0,
             latest_tx: 0,
             latest_rx: 0,
-            last_reset_month: current_month,
+            last_reset_month: current_month.clone(),
         };
         rewrite_network_info_file(&mut file, network_info.encode())
             .await
@@ -238,7 +238,7 @@ async fn get_or_init_latest_network_info(
                 source_rx: 0,
                 latest_tx: 0,
                 latest_rx: 0,
-                last_reset_month: current_month,
+                last_reset_month: current_month.clone(),
             };
             rewrite_network_info_file(&mut file, network_info.encode())
                 .await
@@ -306,7 +306,7 @@ fn should_reset_traffic(last_reset_month: &str, reset_day: u32) -> bool {
     let current_day = now.day();
     
     // If we're in a new month and past the reset day, or it's the reset day and we haven't reset this month
-    if last_reset_month != current_month && current_day >= reset_day {
+    if last_reset_month != &current_month && current_day >= reset_day {
         return true;
     }
     
