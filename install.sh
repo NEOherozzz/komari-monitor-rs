@@ -13,18 +13,20 @@
 # 使用方法:
 #   1. 直接运行: bash install.sh
 #   2. 带参数运行:
-#      bash install.sh --http-server "http://your.server:port" --ws-server "ws://your.server:port" --token "your_token" [--terminal]
+#      bash install.sh --http-server "http://your.server:port" --token "your_token" [--terminal] [--network-reset-day 1] [--network-calibration-tx 0] [--network-calibration-rx 0]
 #================================================================================
 
 # --- 配置 ---
 # GitHub 仓库信息
-GITHUB_REPO="GenshinMinecraft/komari-monitor-rs"
+GITHUB_REPO="NEOherozzz/komari-monitor-rs"
 # 安装路径
 INSTALL_PATH="/usr/local/bin/komari-monitor-rs"
 # 服务名称
 SERVICE_NAME="komari-agent-rs"
 # systemd 服务文件路径
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+# 网络配置文件路径
+NETWORK_CONFIG_FILE="/etc/komari-network.conf"
 
 # --- 颜色定义 ---
 GREEN='\033[0;32m'
@@ -119,25 +121,32 @@ main() {
 
     # --- 参数初始化 ---
     HTTP_SERVER=""
-    WS_SERVER=""
     TOKEN=""
     FAKE="1"
     INTERVAL="1000"
     TLS_FLAG=""
     IGNORE_CERT_FLAG=""
-    TERMINAL_FLAG="" # <-- 新增: 为 --terminal 参数初始化一个标志变量
+    TERMINAL_FLAG=""
+    # 网络统计配置
+    NETWORK_RESET_DAY="1"
+    NETWORK_CALIBRATION_TX="0"
+    NETWORK_CALIBRATION_RX="0"
+    DISABLE_NETWORK_STATS="false"
 
     # --- 解析命令行参数 ---
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --http-server) HTTP_SERVER="$2"; shift 2;;
-            --ws-server) WS_SERVER="$2"; shift 2;;
             -t|--token) TOKEN="$2"; shift 2;;
             -f|--fake) FAKE="$2"; shift 2;;
             --realtime-info-interval) INTERVAL="$2"; shift 2;;
             --tls) TLS_FLAG="--tls"; shift 1;;
             --ignore-unsafe-cert) IGNORE_CERT_FLAG="--ignore-unsafe-cert"; shift 1;;
-            --terminal) TERMINAL_FLAG="--terminal"; shift 1;; # <-- 新增: 识别 --terminal 参数
+            --terminal) TERMINAL_FLAG="--terminal"; shift 1;;
+            --network-reset-day) NETWORK_RESET_DAY="$2"; shift 2;;
+            --network-calibration-tx) NETWORK_CALIBRATION_TX="$2"; shift 2;;
+            --network-calibration-rx) NETWORK_CALIBRATION_RX="$2"; shift 2;;
+            --disable-network-statistics) DISABLE_NETWORK_STATS="true"; shift 1;;
             *) log_warn "未知的参数: $1"; shift 1;;
         esac
     done
@@ -146,17 +155,13 @@ main() {
     if [ -z "$HTTP_SERVER" ]; then
         read -p "请输入主端 Http 地址 (例如 http://127.0.0.1:8080): " HTTP_SERVER
     fi
-    if [ -z "$WS_SERVER" ]; then
-        read -p "请输入主端 WebSocket 地址 (例如 ws://127.0.0.1:8080): " WS_SERVER
-    fi
     if [ -z "$TOKEN" ]; then
         read -p "请输入 Token: " TOKEN
     fi
 
-    # <-- 新增: 交互式询问 --terminal (仅当命令行未提供时)
+    # 交互式询问 --terminal (仅当命令行未提供时)
     if [ -z "$TERMINAL_FLAG" ]; then
       read -p "是否启用 Web Terminal 功能? (y/N): " enable_terminal
-      # 将输入转换为小写以方便比较
       enable_terminal_lower=$(echo "$enable_terminal" | tr '[:upper:]' '[:lower:]')
       if [[ "$enable_terminal_lower" == "y" || "$enable_terminal_lower" == "yes" ]]; then
           TERMINAL_FLAG="--terminal"
@@ -166,21 +171,43 @@ main() {
       fi
     fi
 
+    # 交互式询问网络统计配置
+    read -p "每月流量重置日 (1-31，默认: 1): " input_reset_day
+    if [ -n "$input_reset_day" ]; then
+        NETWORK_RESET_DAY="$input_reset_day"
+    fi
+
+    read -p "是否需要校准流量统计? (y/N): " need_calibration
+    need_calibration_lower=$(echo "$need_calibration" | tr '[:upper:]' '[:lower:]')
+    if [[ "$need_calibration_lower" == "y" || "$need_calibration_lower" == "yes" ]]; then
+        read -p "上传流量校准值 (字节，默认: 0): " input_cal_tx
+        read -p "下载流量校准值 (字节，默认: 0): " input_cal_rx
+        if [ -n "$input_cal_tx" ]; then
+            NETWORK_CALIBRATION_TX="$input_cal_tx"
+        fi
+        if [ -n "$input_cal_rx" ]; then
+            NETWORK_CALIBRATION_RX="$input_cal_rx"
+        fi
+        log_info "流量校准已配置: TX=$NETWORK_CALIBRATION_TX, RX=$NETWORK_CALIBRATION_RX"
+    fi
+
     # 验证输入
-    if [ -z "$HTTP_SERVER" ] || [ -z "$WS_SERVER" ] || [ -z "$TOKEN" ]; then
-        log_error "Http 地址, WebSocket 地址和 Token 不能为空。"
+    if [ -z "$HTTP_SERVER" ] || [ -z "$TOKEN" ]; then
+        log_error "Http 地址和 Token 不能为空。"
         exit 1
     fi
 
     log_info "配置信息确认:"
     echo "  - Http Server: $HTTP_SERVER"
-    echo "  - WS Server: $WS_SERVER"
-    echo "  - Token: ********" # 隐藏Token
+    echo "  - Token: ********"
     echo "  - 虚假倍率: $FAKE"
     echo "  - 上传间隔: $INTERVAL ms"
     echo "  - 启用 TLS: ${TLS_FLAG:--}"
     echo "  - 忽略证书: ${IGNORE_CERT_FLAG:--}"
-    echo "  - 启用 Terminal: ${TERMINAL_FLAG:--}" # <-- 新增: 显示 terminal 状态
+    echo "  - 启用 Terminal: ${TERMINAL_FLAG:--}"
+    echo "  - 流量重置日: 每月 $NETWORK_RESET_DAY 号"
+    echo "  - 流量校准 TX: $NETWORK_CALIBRATION_TX 字节"
+    echo "  - 流量校准 RX: $NETWORK_CALIBRATION_RX 字节"
     echo ""
 
     # --- 安装流程 ---
@@ -200,20 +227,54 @@ main() {
     chmod +x "${INSTALL_PATH}"
     log_info "程序已成功下载并安装到: ${INSTALL_PATH}"
 
+    # --- 创建网络配置文件 ---
+    log_info "正在创建网络配置文件: ${NETWORK_CONFIG_FILE}"
+    cat > ${NETWORK_CONFIG_FILE} <<EOF
+# Komari Monitor Network Configuration
+# 此文件支持热重载，修改后程序会自动检测并应用
+
+# 禁用网络统计 (true/false)
+disable_network_statistics=${DISABLE_NETWORK_STATS}
+
+# 每月流量重置日 (1-31)
+network_reset_day=${NETWORK_RESET_DAY}
+
+# 采样间隔（秒）
+network_interval=60
+
+# 写入磁盘间隔（采样次数）
+network_interval_number=10
+
+# 流量校准值（字节）
+# 用于与 VPS 服务商统计对齐
+network_calibration_tx=${NETWORK_CALIBRATION_TX}
+network_calibration_rx=${NETWORK_CALIBRATION_RX}
+EOF
+
+    chmod 644 ${NETWORK_CONFIG_FILE}
+    log_info "网络配置文件已创建，您可以随时编辑此文件来调整校准值"
+
     # --- 创建 systemd 服务 ---
     log_info "正在创建 systemd 服务..."
 
     # 构建启动命令
-    EXEC_START_CMD="${INSTALL_PATH} --http-server \"${HTTP_SERVER}\" --ws-server \"${WS_SERVER}\" --token \"${TOKEN}\" --fake \"${FAKE}\" --realtime-info-interval \"${INTERVAL}\""
+    EXEC_START_CMD="${INSTALL_PATH} --http-server \"${HTTP_SERVER}\" --token \"${TOKEN}\" --fake \"${FAKE}\" --realtime-info-interval \"${INTERVAL}\""
     if [ -n "$TLS_FLAG" ]; then
         EXEC_START_CMD="$EXEC_START_CMD $TLS_FLAG"
     fi
     if [ -n "$IGNORE_CERT_FLAG" ]; then
         EXEC_START_CMD="$EXEC_START_CMD $IGNORE_CERT_FLAG"
     fi
-    # <-- 新增: 将 --terminal 标志添加到启动命令
     if [ -n "$TERMINAL_FLAG" ]; then
         EXEC_START_CMD="$EXEC_START_CMD $TERMINAL_FLAG"
+    fi
+    # 添加网络配置参数
+    EXEC_START_CMD="$EXEC_START_CMD --config-path \"${NETWORK_CONFIG_FILE}\""
+    EXEC_START_CMD="$EXEC_START_CMD --network-reset-day \"${NETWORK_RESET_DAY}\""
+    EXEC_START_CMD="$EXEC_START_CMD --network-calibration-tx \"${NETWORK_CALIBRATION_TX}\""
+    EXEC_START_CMD="$EXEC_START_CMD --network-calibration-rx \"${NETWORK_CALIBRATION_RX}\""
+    if [ "$DISABLE_NETWORK_STATS" = "true" ]; then
+        EXEC_START_CMD="$EXEC_START_CMD --disable-network-statistics"
     fi
 
     # 使用 cat 和 EOF 创建服务文件
@@ -249,6 +310,12 @@ EOF
         log_info "服务 '${SERVICE_NAME}' 已成功启动并正在运行！"
         log_info "您可以使用 'systemctl status ${SERVICE_NAME}' 命令查看服务状态。"
         log_info "您可以使用 'journalctl -u ${SERVICE_NAME} -f' 命令查看实时日志。"
+        echo ""
+        log_info "=== 网络流量配置说明 ==="
+        log_info "配置文件位置: ${NETWORK_CONFIG_FILE}"
+        log_info "您可以随时编辑此文件来调整流量校准值，程序会自动检测并应用更改"
+        log_info "示例: 如果服务商统计的流量比程序多 1GB，可设置 network_calibration_tx=1073741824"
+        log_info "每月 ${NETWORK_RESET_DAY} 号会自动重置流量统计"
     else
         log_error "服务 '${SERVICE_NAME}' 启动失败！"
         log_error "请使用 'systemctl status ${SERVICE_NAME}' 和 'journalctl -u ${SERVICE_NAME}' 命令检查错误详情。"

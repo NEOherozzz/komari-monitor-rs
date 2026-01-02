@@ -71,9 +71,9 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub disable_network_statistics: bool,
 
-    /// Network Statistics Duration (s)
-    #[arg(long, default_value_t = 864000)]
-    pub network_duration: u32,
+    /// Network Statistics Reset Day (1-31, day of month to reset traffic)
+    #[arg(long, default_value_t = 1)]
+    pub network_reset_day: u32,
 
     /// Network Statistics Interval (s)
     #[arg(long, default_value_t = 10)]
@@ -83,18 +83,33 @@ pub struct Args {
     #[arg(long, default_value_t = 10)]
     pub network_interval_number: u32,
 
+    /// Network Traffic Calibration TX (bytes, offset to align with VPS provider)
+    #[arg(long, default_value_t = 0)]
+    pub network_calibration_tx: i64,
+
+    /// Network Traffic Calibration RX (bytes, offset to align with VPS provider)
+    #[arg(long, default_value_t = 0)]
+    pub network_calibration_rx: i64,
+
     /// Network Statistics Save Path
     #[arg(long)]
     pub network_save_path: Option<String>,
+
+    /// Config File Path (for hot reload)
+    #[arg(long)]
+    pub config_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct NetworkConfig {
     pub disable_network_statistics: bool,
-    pub network_duration: u32,
+    pub network_reset_day: u32,
     pub network_interval: u32,
     pub network_interval_number: u32,
+    pub network_calibration_tx: i64,
+    pub network_calibration_rx: i64,
     pub network_save_path: String,
+    pub config_path: Option<String>,
 }
 
 impl Args {
@@ -176,10 +191,13 @@ impl Args {
 
         NetworkConfig {
             disable_network_statistics,
-            network_duration: self.network_duration,
+            network_reset_day: self.network_reset_day,
             network_interval: self.network_interval,
             network_interval_number: self.network_interval_number,
+            network_calibration_tx: self.network_calibration_tx,
+            network_calibration_rx: self.network_calibration_rx,
             network_save_path: path,
+            config_path: self.config_path.clone(),
         }
     }
 }
@@ -247,15 +265,20 @@ impl Display for Args {
         )?;
 
         if !self.disable_network_statistics {
-            writeln!(f, "    Duration: {} s", self.network_duration)?;
+            writeln!(f, "    Reset Day: {} (day of month)", self.network_reset_day)?;
             writeln!(f, "    Interval: {} s", self.network_interval)?;
             writeln!(
                 f,
                 "    Save Interval: {} cycles",
                 self.network_interval_number
             )?;
+            writeln!(f, "    Calibration TX: {} bytes", self.network_calibration_tx)?;
+            writeln!(f, "    Calibration RX: {} bytes", self.network_calibration_rx)?;
             if let Some(save_path) = &self.network_save_path {
                 writeln!(f, "    Save Path: {}", save_path)?;
+            }
+            if let Some(config_path) = &self.config_path {
+                writeln!(f, "    Config Path: {}", config_path)?;
             }
         }
 
