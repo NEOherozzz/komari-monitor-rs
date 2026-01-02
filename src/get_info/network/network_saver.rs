@@ -155,12 +155,6 @@ impl NetworkInfo {
             last_reset_month: last_reset_month.ok_or("Missing field: last_reset_month")?,
         })
     }
-            source_rx: source_rx.ok_or("Missing field: source_rx")?,
-            latest_tx: latest_tx.ok_or("Missing field: latest_tx")?,
-            latest_rx: latest_rx.ok_or("Missing field: latest_rx")?,
-            counter: counter.ok_or("Missing field: counter")?,
-        })
-    }
 }
 
 async fn get_or_init_latest_network_info(
