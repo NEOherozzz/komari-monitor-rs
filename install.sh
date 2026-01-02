@@ -13,12 +13,12 @@
 # 使用方法:
 #   1. 直接运行: bash install.sh
 #   2. 带参数运行:
-#      bash install.sh --http-server "http://your.server:port" --ws-server "ws://your.server:port" --token "your_token" [--terminal]
+#      bash install.sh --http-server "http://your.server:port" --token "your_token" [--terminal]
 #================================================================================
 
 # --- 配置 ---
 # GitHub 仓库信息
-GITHUB_REPO="GenshinMinecraft/komari-monitor-rs"
+GITHUB_REPO="NEOherozzz/komari-monitor-rs"
 # 安装路径
 INSTALL_PATH="/usr/local/bin/komari-monitor-rs"
 # 服务名称
@@ -119,7 +119,6 @@ main() {
 
     # --- 参数初始化 ---
     HTTP_SERVER=""
-    WS_SERVER=""
     TOKEN=""
     FAKE="1"
     INTERVAL="1000"
@@ -131,7 +130,6 @@ main() {
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --http-server) HTTP_SERVER="$2"; shift 2;;
-            --ws-server) WS_SERVER="$2"; shift 2;;
             -t|--token) TOKEN="$2"; shift 2;;
             -f|--fake) FAKE="$2"; shift 2;;
             --realtime-info-interval) INTERVAL="$2"; shift 2;;
@@ -145,9 +143,6 @@ main() {
     # --- 交互式询问缺失的必要参数 ---
     if [ -z "$HTTP_SERVER" ]; then
         read -p "请输入主端 Http 地址 (例如 http://127.0.0.1:8080): " HTTP_SERVER
-    fi
-    if [ -z "$WS_SERVER" ]; then
-        read -p "请输入主端 WebSocket 地址 (例如 ws://127.0.0.1:8080): " WS_SERVER
     fi
     if [ -z "$TOKEN" ]; then
         read -p "请输入 Token: " TOKEN
@@ -167,14 +162,13 @@ main() {
     fi
 
     # 验证输入
-    if [ -z "$HTTP_SERVER" ] || [ -z "$WS_SERVER" ] || [ -z "$TOKEN" ]; then
-        log_error "Http 地址, WebSocket 地址和 Token 不能为空。"
+    if [ -z "$HTTP_SERVER" ] || [ -z "$TOKEN" ]; then
+        log_error "Http 地址和 Token 不能为空。"
         exit 1
     fi
 
     log_info "配置信息确认:"
     echo "  - Http Server: $HTTP_SERVER"
-    echo "  - WS Server: $WS_SERVER"
     echo "  - Token: ********" # 隐藏Token
     echo "  - 虚假倍率: $FAKE"
     echo "  - 上传间隔: $INTERVAL ms"
@@ -204,7 +198,7 @@ main() {
     log_info "正在创建 systemd 服务..."
 
     # 构建启动命令
-    EXEC_START_CMD="${INSTALL_PATH} --http-server \"${HTTP_SERVER}\" --ws-server \"${WS_SERVER}\" --token \"${TOKEN}\" --fake \"${FAKE}\" --realtime-info-interval \"${INTERVAL}\""
+    EXEC_START_CMD="${INSTALL_PATH} --http-server \"${HTTP_SERVER}\" --token \"${TOKEN}\" --fake \"${FAKE}\" --realtime-info-interval \"${INTERVAL}\""
     if [ -n "$TLS_FLAG" ]; then
         EXEC_START_CMD="$EXEC_START_CMD $TLS_FLAG"
     fi

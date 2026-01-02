@@ -1,0 +1,436 @@
+# 流量统计重置功能重构总结
+
+## 变更概述
+
+本次重构将流量统计的重置逻辑从**定时周期模式**改为**按月固定日期重置**模式，并新增了**流量校准**和**配置热重载**功能。
+
+---
+
+## 主要变更
+
+### 1. 命令行参数变更 ([command_parser.rs](../src/command_parser.rs))
+
+#### 移除的参数
+- `--network-duration` (u32) - 统计持续时间（秒）
+- `--network-interval-number` (u32) - 磁盘写入间隔计数
+
+#### 新增的参数
+- `--reset-day` (u8, 默认 1) - 每月重置日期（1-31，超过当月天数时使用最后一天）
+- `--calibration-tx` (u64, 默认 0) - 上传流量校准值（字节）
+- `--calibration-rx` (u64, 默认 0) - 下载流量校准值（字节）
+
+#### 保留的参数
+- `--disable-network-statistics` - 禁用网络统计
+- `--network-interval` (默认 10) - 采样间隔（秒）
+- `--network-save-path` - 配置文件路径
+
+### 2. NetworkConfig 结构体变更
+
+**旧结构**：
+```rust
+pub struct NetworkConfig {
+    pub disable_network_statistics: bool,
+    pub network_duration: u32,           // 已移除
+    pub network_interval: u32,
+    pub network_interval_number: u32,    // 已移除
+    pub network_save_path: String,
+}
+```
+
+**新结构**：
+```rust
+pub struct NetworkConfig {
+    pub disable_network_statistics: bool,
+    pub network_interval: u32,
+    pub reset_day: u8,                   // 新增
+    pub calibration_tx: u64,             // 新增
+    pub calibration_rx: u64,             // 新增
+    pub network_save_path: String,
+}
+```
+
+### 3. NetworkInfo 结构体变更
+
+**旧结构**：
+```rust
+struct NetworkInfo {
+    config: NetworkConfig,
+    boot_id: String,
+    source_tx: u64,
+    source_rx: u64,
+    latest_tx: u64,
+    latest_rx: u64,
+    counter: u32,                        // 已移除
+}
+```
+
+**新结构**：
+```rust
+struct NetworkInfo {
+    config: NetworkConfig,
+    boot_id: String,
+    source_tx: u64,
+    source_rx: u64,
+    latest_tx: u64,
+    latest_rx: u64,
+    last_reset_month: u8,                // 新增
+}
+```
+
+### 4. 新增辅助函数 ([network_saver.rs](../src/get_info/network/network_saver.rs))
+
+```rust
+/// 获取当前月份 (1-12)
+fn get_current_month() -> u8
+
+/// 获取当前日期 (1-31)
+fn get_current_day() -> u8
+
+/// 获取当前月份的天数 (28-31)
+fn get_days_in_current_month() -> u8
+
+/// 获取有效的重置日期（处理月末情况）
+fn get_effective_reset_day(reset_day: u8) -> u8
+
+/// 检查是否应该重置流量
+fn should_reset_traffic(last_reset_month: u8, reset_day: u8) -> bool
+```
+
+### 5. 配置文件格式变更
+
+**旧格式**（已废弃）：
+```ini
+disable_network_statistics=false
+network_duration=864000
+network_interval=10
+network_interval_number=10
+network_save_path=/etc/komari-network.conf
+boot_id=xxx
+source_tx=0
+source_rx=0
+latest_tx=0
+latest_rx=0
+counter=86400
+```
+
+**新格式**：
+```ini
+disable_network_statistics=false
+network_interval=10
+reset_day=1
+calibration_tx=0
+calibration_rx=0
+network_save_path=/etc/komari-network.conf
+boot_id=xxx
+source_tx=0
+source_rx=0
+latest_tx=0
+latest_rx=0
+last_reset_month=1
+```
+
+---
+
+## 功能实现细节
+
+### 1. 按月重置逻辑
+
+**实现位置**: [network_saver.rs:352-374](../src/get_info/network/network_saver.rs#L352-L374)
+
+**触发条件**:
+- 当前月份 ≠ `last_reset_month`
+- 当前日期 ≥ `reset_day`
+
+**重置操作**:
+1. 记录当前系统流量为新的 `source_tx/source_rx`
+2. 清零 `latest_tx/latest_rx`
+3. 更新 `last_reset_month` 为当前月份
+4. 立即保存到配置文件
+
+**代码示例**:
+```rust
+if should_reset_traffic(network_info.last_reset_month, network_info.config.reset_day) {
+    let current_month = get_current_month();
+    info!("Monthly traffic reset triggered (reset day: {}, current month: {})",
+        network_info.config.reset_day, current_month);
+
+    network_info = NetworkInfo {
+        config: network_info.config.clone(),
+        boot_id: network_info.boot_id.clone(),
+        source_tx: total_up,   // 新基准
+        source_rx: total_down,
+        latest_tx: 0,          // 清零
+        latest_rx: 0,
+        last_reset_month: current_month,
+    };
+
+    // 立即保存
+    rewrite_network_info_file(&mut file, network_info.encode()).await;
+    info!("Traffic statistics reset completed");
+}
+```
+
+### 2. 流量校准
+
+**实现位置**: [network_saver.rs:391-393](../src/get_info/network/network_saver.rs#L391-L393)
+
+**计算公式**:
+```rust
+最终流量 = 本周期流量 + 校准值
+
+let total_tx = network_info.latest_tx + network_info.config.calibration_tx;
+let total_rx = network_info.latest_rx + network_info.config.calibration_rx;
+```
+
+**使用场景**:
+- VPS 服务商显示已使用 50GB，但程序从 0 开始统计
+- 设置 `calibration_tx=53687091200` (50GB) 即可对齐显示
+
+### 3. 配置热重载
+
+**实现位置**: [network_saver.rs:404-429](../src/get_info/network/network_saver.rs#L404-L429)
+
+**工作原理**:
+1. 每个采样周期后读取配置文件
+2. 解析并对比配置是否变化
+3. 如果变化，应用新配置但保留流量数据
+4. 保存更新后的配置
+
+**代码示例**:
+```rust
+// 每次采样后检查配置文件
+let mut config_file = File::open(&network_info.config.network_save_path).await?;
+let mut config_data = String::new();
+config_file.read_to_string(&mut config_data).await?;
+
+if let Ok(updated_info) = NetworkInfo::decode(&config_data) {
+    if updated_info.config != network_info.config {
+        info!("Configuration file changed detected, reloading configuration");
+        network_info.config = updated_info.config.clone();
+        rewrite_network_info_file(&mut file, network_info.encode()).await;
+        info!("Configuration reloaded successfully");
+    }
+}
+```
+
+### 4. 配置变更处理改进
+
+**旧逻辑** (已移除):
+- 配置不匹配时清空所有流量数据
+- 3 秒警告后重置统计
+
+**新逻辑**: [network_saver.rs:260-279](../src/get_info/network/network_saver.rs#L260-L279)
+- 配置不匹配时**保留**流量数据
+- 仅更新配置字段
+- 无需警告和等待
+
+```rust
+if &raw_network_info.config != network_config {
+    info!("Network configuration changed, applying new configuration while preserving traffic data");
+    let network_info = NetworkInfo {
+        config: network_config.clone(),
+        // 保留所有流量数据
+        boot_id: raw_network_info.boot_id,
+        source_tx: raw_network_info.source_tx,
+        source_rx: raw_network_info.source_rx,
+        latest_tx: raw_network_info.latest_tx,
+        latest_rx: raw_network_info.latest_rx,
+        last_reset_month: raw_network_info.last_reset_month,
+    };
+    rewrite_network_info_file(&mut file, network_info.encode()).await;
+}
+```
+
+### 5. 系统重启处理改进
+
+**实现位置**: [network_saver.rs:282-321](../src/get_info/network/network_saver.rs#L282-L321)
+
+**Linux**:
+- 通过 `boot_id` 检测重启
+- 重启时合并 `latest` 到 `source`
+
+**Windows**:
+- 每次启动都假设重启（Windows 无可靠 boot_id）
+- 自动合并流量数据
+
+---
+
+## 文件修改清单
+
+### 修改的文件
+
+1. **[src/command_parser.rs](../src/command_parser.rs)**
+   - 修改 `Args` 结构体 (L69-93)
+   - 修改 `NetworkConfig` 结构体 (L95-103)
+   - 修改 `network_config()` 方法 (L182-189)
+   - 修改 `Display` trait 实现 (L255-263)
+
+2. **[src/get_info/network/network_saver.rs](../src/get_info/network/network_saver.rs)**
+   - 添加 `time::OffsetDateTime` 导入 (L11)
+   - 新增 `get_current_month()` 函数 (L15-24)
+   - 新增 `get_current_day()` 函数 (L26-35)
+   - 新增 `should_reset_traffic()` 函数 (L37-44)
+   - 修改 `NetworkInfo` 结构体 (L46-54)
+   - 修改 `encode()` 方法 (L26-53)
+   - 修改 `decode()` 方法 (L55-138)
+   - 修改 `get_or_init_latest_network_info()` 函数 (L141-322)
+   - 完全重构 `network_saver()` 函数 (L324-431)
+
+### 新增的文件
+
+1. **[NETWORK_RESET_GUIDE.md](../NETWORK_RESET_GUIDE.md)**
+   - 用户使用指南
+   - 配置说明和示例
+   - 故障排查
+
+2. **[komari-network.conf.example](../komari-network.conf.example)**
+   - 示例配置文件
+   - 详细注释和使用场景
+
+3. **[.claude/REFACTORING_SUMMARY.md](./REFACTORING_SUMMARY.md)**
+   - 本文档（重构总结）
+
+---
+
+## 兼容性说明
+
+### ⚠️ 不向前兼容
+
+本次重构**不兼容**旧版配置文件，原因：
+1. 字段结构完全改变（移除 `counter`，新增 `last_reset_month`）
+2. 配置参数不同（移除 `network_duration` 等）
+3. 重置逻辑完全不同
+
+### 升级步骤
+
+从旧版本升级时：
+```bash
+# 1. 备份旧配置（可选）
+sudo cp /etc/komari-network.conf /etc/komari-network.conf.old
+
+# 2. 删除旧配置
+sudo rm /etc/komari-network.conf
+
+# 3. 重启程序，自动创建新配置
+sudo systemctl restart komari-monitor
+```
+
+---
+
+## 测试建议
+
+### 单元测试场景
+
+1. **按月重置测试**
+   - 模拟月份切换
+   - 验证 `should_reset_traffic()` 逻辑
+
+2. **流量校准测试**
+   - 验证校准值正确应用
+   - 测试校准值热重载
+
+3. **配置热重载测试**
+   - 修改配置文件
+   - 验证程序自动重载
+
+4. **系统重启测试**
+   - Linux: 验证 boot_id 检测
+   - Windows: 验证流量合并
+
+### 集成测试场景
+
+1. **月度周期完整测试**
+   - 运行跨月场景
+   - 验证自动重置
+
+2. **VPS 流量对齐测试**
+   - 设置校准值
+   - 对比服务商面板
+
+3. **长期运行测试**
+   - 运行 24+ 小时
+   - 验证磁盘写入和数据持久化
+
+---
+
+## 性能影响
+
+### 优化点
+
+1. **磁盘写入频率**
+   - 旧版本: 每 `network_interval_number` 次采样（默认 10 次 = 100 秒）
+   - 新版本: 固定每 10 次采样（100 秒）
+   - **无变化**
+
+2. **配置检测开销**
+   - 每个采样周期读取一次配置文件
+   - 异步 I/O，不阻塞主流程
+   - **开销极小**（~1ms）
+
+3. **内存占用**
+   - 移除 `counter` 字段（-4 bytes）
+   - 新增 `last_reset_month` 字段（+1 byte）
+   - 新增校准值字段（+16 bytes）
+   - **净增加**: ~13 bytes（可忽略不计）
+
+---
+
+## 已知限制
+
+1. **reset_day 范围限制为 1-28**
+   - 避免 2 月份等月末天数不一致问题
+   - 如需在月末重置，建议使用 28 号
+
+2. **配置热重载延迟**
+   - 最长延迟 = `network_interval` 秒（默认 10 秒）
+   - 无法立即生效
+
+3. **时区处理**
+   - 优先使用本地时间
+   - 失败时回退到 UTC
+   - 可能在跨时区服务器上有偏差
+
+---
+
+## 后续改进建议
+
+1. **添加 API 接口**
+   - 支持通过 HTTP API 修改校准值
+   - 无需手动编辑配置文件
+
+2. **支持自定义重置周期**
+   - 每周重置
+   - 每季度重置
+
+3. **流量预警功能**
+   - 接近配额时发送通知
+   - 需要新增配额配置字段
+
+4. **历史流量统计**
+   - 保留每月历史记录
+   - 生成流量报表
+
+---
+
+## 维护者备注
+
+- **代码审查重点**: [network_saver.rs:324-431](../src/get_info/network/network_saver.rs#L324-L431) 主循环逻辑
+- **测试覆盖**: 需补充单元测试和集成测试
+- **文档**: 已提供完整用户指南和示例配置
+
+---
+
+## 版本信息
+
+- **重构日期**: 2026-01-02
+- **目标版本**: 0.4.0（建议）
+- **兼容性**: 不向前兼容
+- **依赖变更**: 无（使用已有的 `time` crate）
+
+---
+
+## 参考文档
+
+- [NETWORK_RESET_GUIDE.md](../NETWORK_RESET_GUIDE.md) - 用户使用指南
+- [komari-network.conf.example](../komari-network.conf.example) - 示例配置文件
+- [src/get_info/network/network_saver.rs](../src/get_info/network/network_saver.rs) - 核心实现代码

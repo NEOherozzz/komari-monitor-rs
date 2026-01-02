@@ -71,17 +71,21 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub disable_network_statistics: bool,
 
-    /// Network Statistics Duration (s)
-    #[arg(long, default_value_t = 864000)]
-    pub network_duration: u32,
-
     /// Network Statistics Interval (s)
     #[arg(long, default_value_t = 10)]
     pub network_interval: u32,
 
-    /// Network Statistics Save to Disk Interval Count (s)
-    #[arg(long, default_value_t = 10)]
-    pub network_interval_number: u32,
+    /// Day of month to reset traffic (1-31, uses last day if month doesn't have that day)
+    #[arg(long, default_value_t = 1)]
+    pub reset_day: u8,
+
+    /// Traffic calibration for upload (bytes)
+    #[arg(long, default_value_t = 0)]
+    pub calibration_tx: u64,
+
+    /// Traffic calibration for download (bytes)
+    #[arg(long, default_value_t = 0)]
+    pub calibration_rx: u64,
 
     /// Network Statistics Save Path
     #[arg(long)]
@@ -91,9 +95,10 @@ pub struct Args {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct NetworkConfig {
     pub disable_network_statistics: bool,
-    pub network_duration: u32,
     pub network_interval: u32,
-    pub network_interval_number: u32,
+    pub reset_day: u8,
+    pub calibration_tx: u64,
+    pub calibration_rx: u64,
     pub network_save_path: String,
 }
 
@@ -176,9 +181,10 @@ impl Args {
 
         NetworkConfig {
             disable_network_statistics,
-            network_duration: self.network_duration,
             network_interval: self.network_interval,
-            network_interval_number: self.network_interval_number,
+            reset_day: self.reset_day.clamp(1, 31),
+            calibration_tx: self.calibration_tx,
+            calibration_rx: self.calibration_rx,
             network_save_path: path,
         }
     }
@@ -247,13 +253,10 @@ impl Display for Args {
         )?;
 
         if !self.disable_network_statistics {
-            writeln!(f, "    Duration: {} s", self.network_duration)?;
             writeln!(f, "    Interval: {} s", self.network_interval)?;
-            writeln!(
-                f,
-                "    Save Interval: {} cycles",
-                self.network_interval_number
-            )?;
+            writeln!(f, "    Reset Day: {} of each month", self.reset_day)?;
+            writeln!(f, "    Calibration TX: {} bytes", self.calibration_tx)?;
+            writeln!(f, "    Calibration RX: {} bytes", self.calibration_rx)?;
             if let Some(save_path) = &self.network_save_path {
                 writeln!(f, "    Save Path: {}", save_path)?;
             }
