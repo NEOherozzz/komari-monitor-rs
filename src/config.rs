@@ -21,6 +21,7 @@ impl IpProvider {
         }
     }
 
+    #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         match self {
             IpProvider::Cloudflare => "cloudflare".to_string(),
@@ -50,6 +51,7 @@ impl LogLevel {
         }
     }
 
+    #[allow(dead_code)]
     pub fn to_string(&self) -> String {
         match self {
             LogLevel::Error => "error".to_string(),
@@ -121,6 +123,7 @@ impl Default for UserConfig {
 
 impl UserConfig {
     /// Encode configuration to key=value format
+    #[allow(dead_code)]
     pub fn encode(&self) -> String {
         let mut lines = Vec::new();
 
@@ -413,6 +416,7 @@ impl ConfigReader {
     }
 
     /// Save user configuration file
+    #[allow(dead_code)]
     pub fn save_user_config(path: &PathBuf, config: &UserConfig) -> Result<(), String> {
         let content = config.encode();
 
@@ -431,6 +435,7 @@ impl ConfigReader {
     }
 
     /// Load runtime data file
+    #[allow(dead_code)]
     pub fn load_runtime_data(path: &PathBuf) -> Result<RuntimeData, String> {
         // If file doesn't exist, return default
         if !path.exists() {
@@ -446,6 +451,7 @@ impl ConfigReader {
     }
 
     /// Save runtime data file
+    #[allow(dead_code)]
     pub fn save_runtime_data(path: &PathBuf, data: &RuntimeData) -> Result<(), String> {
         let content = data.encode();
 

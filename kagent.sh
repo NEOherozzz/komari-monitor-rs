@@ -27,6 +27,8 @@ INSTALL_PATH="/usr/local/bin/komari-monitor-rs"
 SERVICE_NAME="komari-agent-rs"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 CONFIG_FILE="/etc/komari-agent.conf"
+NETWORK_DATA_DIR="/var/lib/komari-monitor"
+NETWORK_DATA_FILE="${NETWORK_DATA_DIR}/network-data.conf"
 VERSION="1.0.0"
 
 # --- 颜色定义 ---
@@ -138,6 +140,9 @@ cmd_install() {
     TLS_FLAG=""
     IGNORE_CERT_FLAG=""
     TERMINAL_FLAG=""
+    RESET_DAY=""
+    CALIBRATION_TX=""
+    CALIBRATION_RX=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -148,6 +153,9 @@ cmd_install() {
             --tls) TLS_FLAG="--tls"; shift 1;;
             --ignore-unsafe-cert) IGNORE_CERT_FLAG="--ignore-unsafe-cert"; shift 1;;
             --terminal) TERMINAL_FLAG="--terminal"; shift 1;;
+            --reset-day) RESET_DAY="$2"; shift 2;;
+            --calibration-tx) CALIBRATION_TX="$2"; shift 2;;
+            --calibration-rx) CALIBRATION_RX="$2"; shift 2;;
             *) log_warn "未知参数: $1"; shift 1;;
         esac
     done
@@ -168,6 +176,37 @@ cmd_install() {
         fi
     fi
 
+    # 询问网络流量统计配置
+    if [ -z "$RESET_DAY" ]; then
+        read -p "请输入流量重置日期 [1-31] (默认: 1): " RESET_DAY
+        RESET_DAY=${RESET_DAY:-1}
+        # 验证 reset_day 范围
+        if ! [[ "$RESET_DAY" =~ ^[0-9]+$ ]] || [ "$RESET_DAY" -lt 1 ] || [ "$RESET_DAY" -gt 31 ]; then
+            log_warn "流量重置日期无效，使用默认值: 1"
+            RESET_DAY=1
+        fi
+    fi
+
+    if [ -z "$CALIBRATION_TX" ]; then
+        read -p "请输入上传流量校准值（字节）(默认: 0): " CALIBRATION_TX
+        CALIBRATION_TX=${CALIBRATION_TX:-0}
+        # 验证为数字
+        if ! [[ "$CALIBRATION_TX" =~ ^[0-9]+$ ]]; then
+            log_warn "上传流量校准值无效，使用默认值: 0"
+            CALIBRATION_TX=0
+        fi
+    fi
+
+    if [ -z "$CALIBRATION_RX" ]; then
+        read -p "请输入下载流量校准值（字节）(默认: 0): " CALIBRATION_RX
+        CALIBRATION_RX=${CALIBRATION_RX:-0}
+        # 验证为数字
+        if ! [[ "$CALIBRATION_RX" =~ ^[0-9]+$ ]]; then
+            log_warn "下载流量校准值无效，使用默认值: 0"
+            CALIBRATION_RX=0
+        fi
+    fi
+
     # 验证输入
     if [ -z "$HTTP_SERVER" ] || [ -z "$TOKEN" ]; then
         log_error "HTTP 地址和 Token 不能为空"
@@ -182,6 +221,9 @@ cmd_install() {
     echo "  启用 TLS: ${TLS_FLAG:--}"
     echo "  忽略证书: ${IGNORE_CERT_FLAG:--}"
     echo "  启用 Terminal: ${TERMINAL_FLAG:--}"
+    echo "  流量重置日期: 每月 $RESET_DAY 号"
+    echo "  上传流量校准: $CALIBRATION_TX 字节"
+    echo "  下载流量校准: $CALIBRATION_RX 字节"
     echo ""
 
     # 安装依赖
@@ -202,21 +244,104 @@ cmd_install() {
     chmod +x "${INSTALL_PATH}"
     log_success "程序已安装到: ${INSTALL_PATH}"
 
-    # 创建配置文件
+    # 创建配置文件（按照 komari-agent.conf.example 格式）
     cat > ${CONFIG_FILE} <<EOF
 # Komari Monitor Agent Configuration
 # Generated at $(date)
 
+# ==================== Main Server Configuration ====================
+# REQUIRED: HTTP server address
 http_server=${HTTP_SERVER}
+
+# OPTIONAL: WebSocket server address (if not specified, will be converted from http_server)
+ws_server=
+
+# REQUIRED: Authentication token
 token=${TOKEN}
+
+# ==================== TLS Configuration ====================
+# Enable TLS encryption for connections (default: false)
+tls=$(if [ -n "${TLS_FLAG}" ]; then echo "true"; else echo "false"; fi)
+
+# Ignore unsafe/self-signed certificates (default: false)
+# WARNING: Only use this for testing purposes
+ignore_unsafe_cert=$(if [ -n "${IGNORE_CERT_FLAG}" ]; then echo "true"; else echo "false"; fi)
+
+# ==================== Performance Configuration ====================
+# Fake multiplier for system metrics (default: 1.0)
+# Use values > 1.0 to artificially inflate metrics (for testing)
 fake=${FAKE}
+
+# Real-time information upload interval in milliseconds (default: 1000)
+# How often to send system metrics to the server
 realtime_info_interval=${INTERVAL}
-tls=${TLS_FLAG:+true}
-ignore_unsafe_cert=${IGNORE_CERT_FLAG:+true}
-terminal=${TERMINAL_FLAG:+true}
+
+# ==================== Feature Configuration ====================
+# Public IP address provider (default: ipinfo)
+# Options: cloudflare, ipinfo
+ip_provider=ipinfo
+
+# Enable web terminal feature (default: false)
+# Allows remote command execution via web interface
+# WARNING: This is a security-sensitive feature
+terminal=$(if [ -n "${TERMINAL_FLAG}" ]; then echo "true"; else echo "false"; fi)
+
+# Terminal entry program (default: default)
+# default = auto-detect (cmd.exe on Windows, bash or sh on Linux)
+# Or specify a custom shell like: /bin/zsh, /bin/fish, etc.
+terminal_entry=default
+
+# Disable Windows toast notifications (default: false)
+# Only applicable on Windows systems
+disable_toast_notify=false
+
+# ==================== Network Statistics Configuration ====================
+# Disable network traffic statistics (default: false)
+# Set to true to disable traffic monitoring completely
+disable_network_statistics=false
+
+# Network statistics sampling interval in seconds (default: 10)
+# How often to sample network interface traffic
+network_interval=10
+
+# Day of month to reset traffic statistics (default: 1)
+# Valid range: 1-31
+# If the day exceeds the month's days (e.g., 31 in February), uses last day of month
+reset_day=${RESET_DAY}
+
+# Traffic calibration for upload in bytes (default: 0)
+# Use this to align with your VPS provider's traffic statistics
+calibration_tx=${CALIBRATION_TX}
+
+# Traffic calibration for download in bytes (default: 0)
+calibration_rx=${CALIBRATION_RX}
+
+# ==================== Logging Configuration ====================
+# Log level (default: info)
+# Options: error, warn, info, debug, trace
+log_level=info
+
+# ==================== Notes ====================
+# 1. After modifying this file, restart the service for changes to take effect:
+#    sudo systemctl restart ${SERVICE_NAME}
+#
+# 2. View service status:
+#    sudo kagent.sh status
+#
+# 3. View logs:
+#    sudo journalctl -u ${SERVICE_NAME} -f
+#
+# 4. For more information, visit:
+#    https://github.com/${GITHUB_REPO}
 EOF
 
     log_success "配置文件已创建: ${CONFIG_FILE}"
+
+    # 创建 network-data 目录
+    if [ ! -d "${NETWORK_DATA_DIR}" ]; then
+        mkdir -p "${NETWORK_DATA_DIR}"
+        log_info "已创建数据目录: ${NETWORK_DATA_DIR}"
+    fi
 
     # 创建 systemd 服务
     cat > ${SERVICE_FILE} <<EOF
@@ -296,17 +421,33 @@ cmd_uninstall() {
         log_success "已删除程序: ${INSTALL_PATH}"
     fi
 
-    # 询问是否删除配置文件
-    read -p "是否删除配置文件? (y/N): " delete_config
+    # 询问是否删除配置文件和数据文件
+    read -p "是否删除配置文件和数据文件? (y/N): " delete_config
     delete_config_lower=$(echo "$delete_config" | tr '[:upper:]' '[:lower:]')
 
     if [[ "$delete_config_lower" == "y" || "$delete_config_lower" == "yes" ]]; then
+        # 删除配置文件
         if [ -f "${CONFIG_FILE}" ]; then
             rm -f "${CONFIG_FILE}"
             log_success "已删除配置文件: ${CONFIG_FILE}"
         fi
+
+        # 删除 network-data 文件
+        if [ -f "${NETWORK_DATA_FILE}" ]; then
+            rm -f "${NETWORK_DATA_FILE}"
+            log_success "已删除数据文件: ${NETWORK_DATA_FILE}"
+        fi
+
+        # 删除数据目录（如果为空）
+        if [ -d "${NETWORK_DATA_DIR}" ] && [ -z "$(ls -A ${NETWORK_DATA_DIR})" ]; then
+            rmdir "${NETWORK_DATA_DIR}"
+            log_success "已删除数据目录: ${NETWORK_DATA_DIR}"
+        fi
     else
         log_info "保留配置文件: ${CONFIG_FILE}"
+        if [ -f "${NETWORK_DATA_FILE}" ]; then
+            log_info "保留数据文件: ${NETWORK_DATA_FILE}"
+        fi
     fi
 
     systemctl daemon-reload
@@ -371,6 +512,7 @@ cmd_status() {
     echo "  服务名称: ${SERVICE_NAME}"
     echo "  程序路径: ${INSTALL_PATH}"
     echo "  配置文件: ${CONFIG_FILE}"
+    echo "  数据目录: ${NETWORK_DATA_DIR}"
     echo "  服务文件: ${SERVICE_FILE}"
 
     if [ -f "${CONFIG_FILE}" ]; then
@@ -545,56 +687,56 @@ cmd_update() {
 # 帮助信息
 #================================================================================
 cmd_help() {
-    cat <<EOF
-${CYAN}Komari Agent 管理工具 v${VERSION}${NC}
-
-${GREEN}使用方法:${NC}
-  sudo kagent.sh <命令> [参数]
-
-${GREEN}可用命令:${NC}
-  ${YELLOW}install${NC}              安装 Komari Agent
-                       参数: --http-server, --token, --terminal, 等
-                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken
-
-  ${YELLOW}uninstall${NC}            卸载 Komari Agent
-
-  ${YELLOW}start${NC}                启动服务
-  ${YELLOW}stop${NC}                 停止服务
-  ${YELLOW}restart${NC}              重启服务
-
-  ${YELLOW}status${NC}               查看服务状态和配置信息
-
-  ${YELLOW}logs${NC}                 查看实时日志
-
-  ${YELLOW}config show${NC}          显示当前配置
-  ${YELLOW}config edit${NC}          编辑配置文件
-  ${YELLOW}config set${NC} <key> <value>
-                       设置配置项
-                       示例: sudo kagent.sh config set reset_day 5
-
-  ${YELLOW}update${NC}               更新程序到最新版本
-
-  ${YELLOW}help${NC}                 显示此帮助信息
-
-${GREEN}常用配置项:${NC}
-  http_server              HTTP 服务器地址
-  token                    认证令牌
-  terminal                 启用 Web Terminal (true/false)
-  network_interval         网络统计采样间隔（秒）
-  reset_day                流量重置日期（1-31）
-  calibration_tx           上传流量校准值（字节）
-  calibration_rx           下载流量校准值（字节）
-  log_level                日志级别（error/warn/info/debug/trace）
-
-${GREEN}文件位置:${NC}
-  程序:     ${INSTALL_PATH}
-  配置:     ${CONFIG_FILE}
-  服务:     ${SERVICE_FILE}
-
-${GREEN}更多信息:${NC}
-  GitHub: https://github.com/${GITHUB_REPO}
-
-EOF
+    echo -e "${CYAN}Komari Agent 管理工具 v${VERSION}${NC}"
+    echo ""
+    echo -e "${GREEN}使用方法:${NC}"
+    echo "  sudo kagent.sh <命令> [参数]"
+    echo ""
+    echo -e "${GREEN}可用命令:${NC}"
+    echo -e "  ${YELLOW}install${NC}              安装 Komari Agent"
+    echo "                       参数: --http-server, --token, --terminal,"
+    echo "                             --reset-day, --calibration-tx, --calibration-rx, 等"
+    echo "                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken --reset-day 5"
+    echo ""
+    echo -e "  ${YELLOW}uninstall${NC}            卸载 Komari Agent"
+    echo ""
+    echo -e "  ${YELLOW}start${NC}                启动服务"
+    echo -e "  ${YELLOW}stop${NC}                 停止服务"
+    echo -e "  ${YELLOW}restart${NC}              重启服务"
+    echo ""
+    echo -e "  ${YELLOW}status${NC}               查看服务状态和配置信息"
+    echo ""
+    echo -e "  ${YELLOW}logs${NC}                 查看实时日志"
+    echo ""
+    echo -e "  ${YELLOW}config show${NC}          显示当前配置"
+    echo -e "  ${YELLOW}config edit${NC}          编辑配置文件"
+    echo -e "  ${YELLOW}config set${NC} <key> <value>"
+    echo "                       设置配置项"
+    echo "                       示例: sudo kagent.sh config set reset_day 5"
+    echo ""
+    echo -e "  ${YELLOW}update${NC}               更新程序到最新版本"
+    echo ""
+    echo -e "  ${YELLOW}help${NC}                 显示此帮助信息"
+    echo ""
+    echo -e "${GREEN}常用配置项:${NC}"
+    echo "  http_server              HTTP 服务器地址"
+    echo "  token                    认证令牌"
+    echo "  terminal                 启用 Web Terminal (true/false)"
+    echo "  network_interval         网络统计采样间隔（秒）"
+    echo "  reset_day                流量重置日期（1-31）"
+    echo "  calibration_tx           上传流量校准值（字节）"
+    echo "  calibration_rx           下载流量校准值（字节）"
+    echo "  log_level                日志级别（error/warn/info/debug/trace）"
+    echo ""
+    echo -e "${GREEN}文件位置:${NC}"
+    echo "  程序:     ${INSTALL_PATH}"
+    echo "  配置:     ${CONFIG_FILE}"
+    echo "  数据:     ${NETWORK_DATA_DIR}"
+    echo "  服务:     ${SERVICE_FILE}"
+    echo ""
+    echo -e "${GREEN}更多信息:${NC}"
+    echo "  GitHub: https://github.com/${GITHUB_REPO}"
+    echo ""
 }
 
 #================================================================================

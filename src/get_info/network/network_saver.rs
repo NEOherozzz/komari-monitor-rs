@@ -1,4 +1,4 @@
-use crate::config::{ConfigPath, ConfigReader, RuntimeData, UserConfig};
+use crate::config::{ConfigPath, RuntimeData, UserConfig};
 use crate::get_info::network::filter_network;
 use log::{error, info, warn};
 use std::fs;

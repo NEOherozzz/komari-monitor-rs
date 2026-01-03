@@ -10,7 +10,7 @@
 
 use crate::callbacks::handle_callbacks;
 use crate::command_parser::Args;
-use crate::config::{ConfigPath, ConfigReader, UserConfig};
+use crate::config::{ConfigPath, ConfigReader};
 use crate::data_struct::{BasicInfo, RealTimeInfo};
 use crate::dry_run::dry_run;
 use crate::get_info::network::network_saver::network_saver;
