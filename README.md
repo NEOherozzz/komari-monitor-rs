@@ -1,7 +1,7 @@
 # Komari-Monitor-rs
 
-![](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Frsbench%2Frsbench&label=&icon=github&color=%23160d27)
-![komari-monitor-rs](https://socialify.git.ci/GenshinMinecraft/komari-monitor-rs/image?custom_description=Komari+%E7%AC%AC%E4%B8%89%E6%96%B9+Agent+%7C+%E9%AB%98%E6%80%A7%E8%83%BD&description=1&font=KoHo&forks=1&issues=1&language=1&name=1&owner=1&pattern=Floating+Cogs&pulls=1&stargazers=1&theme=Auto)
+![](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2FNEOherozzz%2Fkomari-monitor-rs&label=&icon=github&color=%23160d27)
+![komari-monitor-rs](https://socialify.git.ci/NEOherozzz/komari-monitor-rs/image?custom_description=Komari+%E7%AC%AC%E4%B8%89%E6%96%B9+Agent+%7C+%E9%AB%98%E6%80%A7%E8%83%BD+%7C+Fork+Enhanced&description=1&font=KoHo&forks=1&issues=1&language=1&name=1&owner=1&pattern=Floating+Cogs&pulls=1&stargazers=1&theme=Auto)
 
 ## About
 
@@ -9,6 +9,77 @@
 Agent
 
 致力于实现[原版 Agent](https://github.com/komari-monitor/komari-agent) 的所有功能，并拓展更多功能
+
+## Fork 修改说明
+
+本项目 Fork 自 [GenshinMinecraft/komari-monitor-rs](https://github.com/GenshinMinecraft/komari-monitor-rs)，并进行了以下重要修改和增强：
+
+### 🚀 主要功能增强
+
+#### 1. 网络流量统计重构
+- **按月重置模式**：将流量重置从定时周期改为每月固定日期重置
+  - 新增 `--reset-day` 参数（1-31），支持智能月末处理
+  - 自动适配不同月份的天数（2 月 28/29 天，4/6/9/11 月 30 天等）
+- **流量校准功能**：支持与 VPS 服务商流量对齐
+  - `--calibration-tx`：上传流量校准值
+  - `--calibration-rx`：下载流量校准值
+- **配置热重载**：无需重启程序即可应用配置变更
+- **移除废弃参数**：`--network-duration`、`--network-interval-number`
+
+详细文档：[NETWORK_RESET_GUIDE.md](NETWORK_RESET_GUIDE.md) | [CHANGELOG_NETWORK.md](CHANGELOG_NETWORK.md)
+
+#### 2. 安装和管理工具
+- **kagent.sh 脚本**：新增一键安装和管理工具
+  - 支持无交互安装模式
+  - 重新安装保护（自动保留旧配置和网络数据）
+  - 完整的配置文件生成和管理
+  - 网络数据目录自动管理
+
+#### 3. 配置文件模式
+- 支持配置文件持久化存储
+- 配置变更时保留流量数据（不再强制重置）
+- 改进的配置文件格式，包含详细注释
+
+### 🐛 修复和改进
+
+- **跨平台编译修复**
+  - 修复 Windows 编译错误（未使用导入、死代码警告）
+  - 修复 macOS 编译时 libc 依赖缺失问题
+  - 改进跨平台兼容性
+
+- **运行时改进**
+  - 修复 root 用户检测逻辑
+  - 优化网络数据初始化流程
+  - 改进系统重启检测（Linux 使用 boot_id，Windows 自动合并流量）
+
+- **安装脚本改进**
+  - 移除 `--ws-server` 参数及相关交互
+  - 简化安装流程（仅需 HTTP 地址和 Token）
+  - 修复安装时保留旧网络数据的问题
+
+### 📚 文档增强
+
+新增以下文档：
+- [NETWORK_RESET_GUIDE.md](NETWORK_RESET_GUIDE.md) - 流量统计用户指南
+- [CHANGELOG_NETWORK.md](CHANGELOG_NETWORK.md) - 网络功能变更日志
+- [.claude/REFACTORING_SUMMARY.md](.claude/REFACTORING_SUMMARY.md) - 技术重构总结
+- [.claude/RESET_DAY_IMPROVEMENT.md](.claude/RESET_DAY_IMPROVEMENT.md) - reset_day 功能扩展说明
+
+### ⚠️ 重要变更
+
+**不向前兼容**：网络流量统计功能的配置文件格式已完全改变，从旧版本升级需要删除旧配置文件。
+
+升级步骤：
+```bash
+# 备份旧配置（可选）
+sudo cp /etc/komari-network.conf /etc/komari-network.conf.old
+
+# 删除旧配置
+sudo rm /etc/komari-network.conf
+
+# 重启程序，自动创建新配置
+sudo systemctl restart komari-monitor
+```
 
 ## 近期更新
 
@@ -44,21 +115,40 @@ eth0 | 00:22:48:58:ca:62 | UP: 0 GB / DOWN: 7 GB
 CONNS: TCP: 12 | UDP: 4
 ```
 
-### 已支持周期流量统计 / 清零
+### 流量统计功能 (已重构)
 
-相关参数:
+本项目已将流量统计功能从**周期清零模式**重构为**按月重置模式**，提供更符合 VPS 计费周期的流量统计方式。
 
-- `--disable-network-statistics`: 禁用周期流量统计，上报的总流量回退到原来自网卡启动以来的总流量，默认关闭
-- `--network-duration`: 周期流量统计 的统计长度，单位 sec，默认 864000 (10 Days)
-- `--network-interval`: 周期流量统计 的间隔长度，单位 sec，默认 10
-- `--network-interval-number`: 周期流量统计 的保存到磁盘间隔次数，默认 10 (该参数意义为 `硬盘读写间隔时间 = 间隔长度 \* 间隔次数`，默认值为 10 * 10 = 100sec 写入一次硬盘)
-- `--network-save-path`: 周期流量统计 的文件保存地址，在 Windows 下默认为 `C:\komari-network.conf`，非 Windows 默认为 `/etc/komari-network.conf` (root) 或 `$HOME/.config/komari-network.conf` (非 root)
+主要特性：
+- **按月重置**：在每月固定日期自动重置流量统计（默认每月 1 号）
+- **流量校准**：支持设置基准值，与服务商流量对齐
+- **配置热重载**：修改配置无需重启程序
+- **智能月末处理**：自动适配不同月份的天数
 
-该功能暂未稳定，有问题请及时反馈
+详细使用方法请参考：[NETWORK_RESET_GUIDE.md](NETWORK_RESET_GUIDE.md)
 
-## 一键脚本
+## 一键安装脚本
 
-**本脚本已不再支持，该项目不面向小白用户，请自行配置**
+推荐使用 `kagent.sh` 脚本进行安装和管理：
+
+```bash
+# 下载并执行安装脚本
+curl -O https://raw.githubusercontent.com/NEOherozzz/komari-monitor-rs/main/kagent.sh
+chmod +x kagent.sh
+
+# 交互式安装
+sudo ./kagent.sh install
+
+# 无交互安装（适用于自动化部署）
+sudo ./kagent.sh install --non-interactive --http-server "https://your-server.com" --token "your-token"
+```
+
+脚本支持的操作：
+- `install` - 安装或更新 komari-monitor-rs
+- `uninstall` - 卸载服务
+- `start/stop/restart` - 服务控制
+- `status` - 查看运行状态
+- `logs` - 查看日志
 
 ## 与原版的差异
 
@@ -69,12 +159,12 @@ CONNS: TCP: 12 | UDP: 4
 除此之外，还有希望添加的功能:
 
 - 自动更新
-- ~~自动安装~~
-- ~~Bash / PWSH 一键脚本~~
+- ~~自动安装~~ ✅ 已实现 (kagent.sh)
+- ~~Bash / PWSH 一键脚本~~ ✅ 已实现 (kagent.sh)
 
 ## 下载
 
-在本项目的 [Release 界面](https://github.com/GenshinMinecraft/komari-monitor-rs/releases/tag/latest) 即可下载，按照架构选择即可
+在本项目的 [Release 界面](https://github.com/NEOherozzz/komari-monitor-rs/releases) 即可下载，按照架构选择即可
 
 后缀有 `musl` 字样的可以在任何 Linux 系统下运行
 
@@ -141,17 +231,21 @@ Options:
           Disable Network Statistics
           [default: false]
 
-      --network-duration <NETWORK_DURATION>
-          Network Statistics Duration (s)
-          [default: 864000]
-
       --network-interval <NETWORK_INTERVAL>
           Network Statistics Interval (s)
           [default: 10]
 
-      --network-interval-number <NETWORK_INTERVAL_NUMBER>
-          Network Statistics Save to Disk Interval Count (s)
-          [default: 10]
+      --reset-day <RESET_DAY>
+          Monthly reset day (1-31, auto-adjusts for month-end)
+          [default: 1]
+
+      --calibration-tx <CALIBRATION_TX>
+          Upload traffic calibration value (bytes)
+          [default: 0]
+
+      --calibration-rx <CALIBRATION_RX>
+          Download traffic calibration value (bytes)
+          [default: 0]
 
       --network-save-path <NETWORK_SAVE_PATH>
           Network Statistics Save Path
