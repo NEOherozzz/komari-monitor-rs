@@ -562,13 +562,13 @@ EOF
         log_info "已创建数据目录: ${NETWORK_DATA_DIR}"
     fi
 
-    # 初始化网络数据文件（仅在不存在时）
-    if [ ! -f "${NETWORK_DATA_FILE}" ]; then
-        log_info "正在初始化网络流量统计..."
-        init_network_data "${RESET_DAY}"
-    else
-        log_info "检测到已存在的网络数据文件，保留现有数据"
+    # 初始化网络数据文件（总是重新初始化以确保配置同步）
+    if [ -f "${NETWORK_DATA_FILE}" ]; then
+        log_warn "检测到已存在的网络数据文件，将重新初始化"
+        rm -f "${NETWORK_DATA_FILE}"
     fi
+    log_info "正在初始化网络流量统计..."
+    init_network_data "${RESET_DAY}"
 
     # 创建 systemd 服务
     cat > ${SERVICE_FILE} <<EOF
