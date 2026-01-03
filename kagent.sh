@@ -256,7 +256,7 @@ cmd_install() {
     INTERVAL="1000"
     TLS_FLAG=""
     IGNORE_CERT_FLAG=""
-    TERMINAL_FLAG=""
+    TERMINAL_FLAG="unset"  # 使用 "unset" 标记未设置状态
     RESET_DAY=""
     CALIBRATION_TX=""
     CALIBRATION_RX=""
@@ -270,7 +270,7 @@ cmd_install() {
             --realtime-info-interval) INTERVAL="$2"; shift 2;;
             --tls) TLS_FLAG="--tls"; shift 1;;
             --ignore-unsafe-cert) IGNORE_CERT_FLAG="--ignore-unsafe-cert"; shift 1;;
-            --terminal) TERMINAL_FLAG="--terminal"; shift 1;;
+            --terminal) TERMINAL_FLAG="$2"; shift 2;;
             --reset-day) RESET_DAY="$2"; shift 2;;
             --calibration-tx) CALIBRATION_TX="$2"; shift 2;;
             --calibration-rx) CALIBRATION_RX="$2"; shift 2;;
@@ -287,11 +287,13 @@ cmd_install() {
         read -p "请输入 Token: " TOKEN
     fi
 
-    if [ -z "$TERMINAL_FLAG" ]; then
+    if [ "$TERMINAL_FLAG" = "unset" ]; then
         read -p "是否启用 Web Terminal 功能? (y/N): " enable_terminal
         enable_terminal_lower=$(echo "$enable_terminal" | tr '[:upper:]' '[:lower:]')
         if [[ "$enable_terminal_lower" == "y" || "$enable_terminal_lower" == "yes" ]]; then
-            TERMINAL_FLAG="--terminal"
+            TERMINAL_FLAG="true"
+        else
+            TERMINAL_FLAG="false"
         fi
     fi
 
@@ -359,7 +361,7 @@ cmd_install() {
     echo "  上传间隔: $INTERVAL ms"
     echo "  启用 TLS: ${TLS_FLAG:--}"
     echo "  忽略证书: ${IGNORE_CERT_FLAG:--}"
-    echo "  启用 Terminal: ${TERMINAL_FLAG:--}"
+    echo "  启用 Terminal: $TERMINAL_FLAG"
     echo "  流量重置日期: 每月 $RESET_DAY 号"
     echo "  上传流量校准: $CALIBRATION_TX 字节"
     echo "  下载流量校准: $CALIBRATION_RX 字节"
@@ -369,6 +371,18 @@ cmd_install() {
     # 安装依赖
     install_dependencies
 
+    # 检查服务是否已存在并运行
+    SERVICE_WAS_RUNNING=false
+    if systemctl list-unit-files | grep -q "${SERVICE_NAME}"; then
+        if systemctl is-active --quiet ${SERVICE_NAME}; then
+            log_warn "检测到服务正在运行，需要先停止服务"
+            systemctl stop ${SERVICE_NAME}
+            SERVICE_WAS_RUNNING=true
+            log_info "服务已停止"
+            sleep 1
+        fi
+    fi
+
     # 下载程序
     ARCH_FILE=$(get_arch)
     DOWNLOAD_URL="https://ghfast.top/https://github.com/${GITHUB_REPO}/releases/download/latest/${ARCH_FILE}"
@@ -376,13 +390,74 @@ cmd_install() {
     log_info "检测到系统架构: $(uname -m)"
     log_info "正在下载: ${DOWNLOAD_URL}"
 
+    # 如果文件已存在且正在使用，先备份
+    if [ -f "${INSTALL_PATH}" ]; then
+        cp "${INSTALL_PATH}" "${INSTALL_PATH}.backup" 2>/dev/null || true
+    fi
+
     if ! wget -O "${INSTALL_PATH}" "${DOWNLOAD_URL}"; then
         log_error "下载失败，请检查网络连接"
+        # 恢复备份
+        if [ -f "${INSTALL_PATH}.backup" ]; then
+            mv "${INSTALL_PATH}.backup" "${INSTALL_PATH}"
+            log_info "已恢复原程序"
+            if [ "$SERVICE_WAS_RUNNING" = true ]; then
+                systemctl start ${SERVICE_NAME}
+            fi
+        fi
         exit 1
     fi
 
+    # 删除备份
+    rm -f "${INSTALL_PATH}.backup"
+
     chmod +x "${INSTALL_PATH}"
     log_success "程序已安装到: ${INSTALL_PATH}"
+
+    # 检查是否存在旧配置文件
+    CONFIG_EXISTS=false
+    if [ -f "${CONFIG_FILE}" ]; then
+        CONFIG_EXISTS=true
+        log_warn "检测到已存在的配置文件: ${CONFIG_FILE}"
+        read -p "是否保留现有配置? (Y/n): " keep_config
+        keep_config_lower=$(echo "$keep_config" | tr '[:upper:]' '[:lower:]')
+
+        if [[ "$keep_config_lower" != "n" && "$keep_config_lower" != "no" ]]; then
+            log_info "保留现有配置文件"
+            # 跳过配置文件创建，直接跳到服务重启
+            systemctl daemon-reload
+            if [ "$SERVICE_WAS_RUNNING" = true ]; then
+                systemctl start ${SERVICE_NAME}
+                sleep 2
+                if systemctl is-active --quiet ${SERVICE_NAME}; then
+                    log_success "服务已成功重启并正在运行"
+                else
+                    log_error "服务启动失败，请查看日志: sudo journalctl -u ${SERVICE_NAME}"
+                    exit 1
+                fi
+            else
+                systemctl enable ${SERVICE_NAME}
+                systemctl start ${SERVICE_NAME}
+                sleep 2
+                if systemctl is-active --quiet ${SERVICE_NAME}; then
+                    log_success "服务已成功启动并正在运行"
+                else
+                    log_error "服务启动失败，请查看日志: sudo journalctl -u ${SERVICE_NAME}"
+                    exit 1
+                fi
+            fi
+            echo ""
+            log_info "常用命令:"
+            echo "  查看状态: sudo kagent.sh status"
+            echo "  查看日志: sudo kagent.sh logs"
+            echo "  修改配置: sudo kagent.sh config edit"
+            return
+        else
+            log_info "将使用新配置覆盖现有配置"
+            cp "${CONFIG_FILE}" "${CONFIG_FILE}.backup"
+            log_info "已备份旧配置到: ${CONFIG_FILE}.backup"
+        fi
+    fi
 
     # 创建配置文件（按照 komari-agent.conf.example 格式）
     cat > ${CONFIG_FILE} <<EOF
@@ -424,7 +499,7 @@ ip_provider=ipinfo
 # Enable web terminal feature (default: false)
 # Allows remote command execution via web interface
 # WARNING: This is a security-sensitive feature
-terminal=$(if [ -n "${TERMINAL_FLAG}" ]; then echo "true"; else echo "false"; fi)
+terminal=${TERMINAL_FLAG}
 
 # Terminal entry program (default: default)
 # default = auto-detect (cmd.exe on Windows, bash or sh on Linux)
@@ -487,9 +562,13 @@ EOF
         log_info "已创建数据目录: ${NETWORK_DATA_DIR}"
     fi
 
-    # 初始化网络数据文件
-    log_info "正在初始化网络流量统计..."
-    init_network_data "${RESET_DAY}"
+    # 初始化网络数据文件（仅在不存在时）
+    if [ ! -f "${NETWORK_DATA_FILE}" ]; then
+        log_info "正在初始化网络流量统计..."
+        init_network_data "${RESET_DAY}"
+    else
+        log_info "检测到已存在的网络数据文件，保留现有数据"
+    fi
 
     # 创建 systemd 服务
     cat > ${SERVICE_FILE} <<EOF
@@ -842,9 +921,9 @@ cmd_help() {
     echo ""
     echo -e "${GREEN}可用命令:${NC}"
     echo -e "  ${YELLOW}install${NC}              安装 Komari Agent"
-    echo "                       参数: --http-server, --token, --terminal,"
+    echo "                       参数: --http-server, --token, --terminal <true|false>,"
     echo "                             --reset-day, --calibration-tx, --calibration-rx, --traffic-mode, 等"
-    echo "                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken --reset-day 5 --traffic-mode both"
+    echo "                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken --terminal false --reset-day 5 --traffic-mode both"
     echo ""
     echo -e "  ${YELLOW}uninstall${NC}            卸载 Komari Agent"
     echo ""
