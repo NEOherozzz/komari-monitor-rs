@@ -1,0 +1,96 @@
+# Komari Monitor Agent Configuration
+#
+# This is an example configuration file for Komari Monitor RS.
+# Copy this file to:
+#   - Linux (root):     /etc/komari-agent.conf
+#   - Linux (non-root): ~/.config/komari-agent.conf
+#   - Windows:          C:\komari-agent.conf
+#
+# Or specify a custom path with: komari-monitor-rs --config /path/to/config.conf
+
+# ==================== Main Server Configuration ====================
+# REQUIRED: HTTP server address
+http_server=http://127.0.0.1:8080
+
+# OPTIONAL: WebSocket server address (if not specified, will be converted from http_server)
+ws_server=
+
+# REQUIRED: Authentication token
+token=your_token_here
+
+# ==================== TLS Configuration ====================
+# Enable TLS encryption for connections (default: false)
+tls=false
+
+# Ignore unsafe/self-signed certificates (default: false)
+# WARNING: Only use this for testing purposes
+ignore_unsafe_cert=false
+
+# ==================== Performance Configuration ====================
+# Fake multiplier for system metrics (default: 1.0)
+# Use values > 1.0 to artificially inflate metrics (for testing)
+fake=1.0
+
+# Real-time information upload interval in milliseconds (default: 1000)
+# How often to send system metrics to the server
+realtime_info_interval=1000
+
+# ==================== Feature Configuration ====================
+# Public IP address provider (default: ipinfo)
+# Options: cloudflare, ipinfo
+ip_provider=ipinfo
+
+# Enable web terminal feature (default: false)
+# Allows remote command execution via web interface
+# WARNING: This is a security-sensitive feature
+terminal=false
+
+# Terminal entry program (default: default)
+# default = auto-detect (cmd.exe on Windows, bash or sh on Linux)
+# Or specify a custom shell like: /bin/zsh, /bin/fish, etc.
+terminal_entry=default
+
+# Disable Windows toast notifications (default: false)
+# Only applicable on Windows systems
+disable_toast_notify=false
+
+# ==================== Network Statistics Configuration ====================
+# Disable network traffic statistics (default: false)
+# Set to true to disable traffic monitoring completely
+disable_network_statistics=false
+
+# Network statistics sampling interval in seconds (default: 10)
+# How often to sample network interface traffic
+network_interval=10
+
+# Day of month to reset traffic statistics (default: 1)
+# Valid range: 1-31
+# If the day exceeds the month's days (e.g., 31 in February), uses last day of month
+reset_day=1
+
+# Traffic calibration for upload in bytes (default: 0)
+# Use this to align with your VPS provider's traffic statistics
+# Example: If provider shows 50GB used, but agent shows 0GB, set this to 53687091200 (50GB in bytes)
+calibration_tx=0
+
+# Traffic calibration for download in bytes (default: 0)
+calibration_rx=0
+
+# ==================== Logging Configuration ====================
+# Log level (default: info)
+# Options: error, warn, info, debug, trace
+# Use debug or trace for troubleshooting
+log_level=info
+
+# ==================== Notes ====================
+# 1. After modifying this file, restart the service for changes to take effect:
+#    sudo systemctl restart komari-agent-rs
+#
+# 2. View service status:
+#    sudo kagent.sh status
+#
+# 3. View logs:
+#    sudo journalctl -u komari-agent-rs -f
+#
+# 4. For more information, visit:
+#    https://github.com/NEOherozzz/komari-monitor-rs

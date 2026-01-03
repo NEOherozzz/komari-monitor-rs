@@ -1,4 +1,4 @@
-use crate::command_parser::LogLevel;
+use crate::config::LogLevel;
 use crate::rustls_config::create_dangerous_config;
 use log::Level;
 use std::fmt::Display;

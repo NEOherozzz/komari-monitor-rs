@@ -1,11 +1,9 @@
-use crate::command_parser::NetworkConfig;
+use crate::config::{ConfigPath, ConfigReader, RuntimeData, UserConfig};
 use crate::get_info::network::filter_network;
 use log::{error, info, warn};
-use miniserde::{Deserialize, Serialize};
-use std::cmp::PartialEq;
 use std::fs;
 use std::io::SeekFrom;
-use std::str::FromStr;
+use std::path::PathBuf;
 use std::time::Duration;
 use sysinfo::Networks;
 use time::OffsetDateTime;
@@ -69,157 +67,65 @@ fn get_effective_reset_day(reset_day: u8) -> u8 {
     reset_day.min(days_in_month)
 }
 
+/// Calculate last_reset_month for initial setup
+/// If current day >= reset_day, the reset day has passed this month, so last_reset_month = current_month
+/// If current day < reset_day, the reset day hasn't arrived this month, so last_reset_month = previous_month
+fn calculate_initial_last_reset_month(reset_day: u8) -> u8 {
+    let current_month = get_current_month();
+    let current_day = get_current_day();
+    let effective_reset_day = get_effective_reset_day(reset_day);
+
+    if current_day >= effective_reset_day {
+        // Reset day has passed this month
+        current_month
+    } else {
+        // Reset day hasn't arrived this month, set to previous month
+        if current_month == 1 {
+            12
+        } else {
+            current_month - 1
+        }
+    }
+}
+
 /// Check if traffic should be reset based on current date and reset configuration
 fn should_reset_traffic(last_reset_month: u8, reset_day: u8) -> bool {
     let current_month = get_current_month();
     let current_day = get_current_day();
     let effective_reset_day = get_effective_reset_day(reset_day);
 
-    // Reset if we're in a new month and have reached or passed the effective reset day
-    current_month != last_reset_month && current_day >= effective_reset_day
-}
-
-#[derive(Serialize, Deserialize, PartialEq)]
-struct NetworkInfo {
-    config: NetworkConfig,
-    boot_id: String,
-    boot_source_tx: u64,      // Current boot's baseline traffic
-    boot_source_rx: u64,
-    accumulated_tx: u64,       // Accumulated traffic in current monthly period (across reboots)
-    accumulated_rx: u64,
-    last_reset_month: u8,
-}
-
-impl NetworkInfo {
-    pub fn encode(&self) -> String {
-        let mut output = String::new();
-
-        macro_rules! append_line {
-            ($key:expr, $value:expr) => {
-                output.push_str(&format!("{}={}\n", $key, $value));
-            };
-        }
-
-        append_line!(
-            "disable_network_statistics",
-            self.config.disable_network_statistics
-        );
-        append_line!("network_interval", self.config.network_interval);
-        append_line!("reset_day", self.config.reset_day);
-        append_line!("calibration_tx", self.config.calibration_tx);
-        append_line!("calibration_rx", self.config.calibration_rx);
-        append_line!("network_save_path", self.config.network_save_path);
-
-        append_line!("boot_id", self.boot_id);
-        append_line!("boot_source_tx", self.boot_source_tx);
-        append_line!("boot_source_rx", self.boot_source_rx);
-        append_line!("accumulated_tx", self.accumulated_tx);
-        append_line!("accumulated_rx", self.accumulated_rx);
-        append_line!("last_reset_month", self.last_reset_month);
-
-        output
+    if current_month == last_reset_month {
+        return false; // Same month, no reset
     }
 
-    /// Decoder: Parses NetworkInfo from a String
-    pub fn decode(input: &str) -> Result<Self, String> {
-        let mut disable_network_statistics = None;
-        let mut network_interval = None;
-        let mut reset_day = None;
-        let mut calibration_tx = None;
-        let mut calibration_rx = None;
-        let mut network_save_path = None;
-        let mut boot_id = None;
-        let mut boot_source_tx = None;
-        let mut boot_source_rx = None;
-        let mut accumulated_tx = None;
-        let mut accumulated_rx = None;
-        let mut last_reset_month = None;
+    // Calculate month difference
+    let months_diff = if current_month > last_reset_month {
+        current_month - last_reset_month
+    } else {
+        12 - last_reset_month + current_month // Cross year
+    };
 
-        for (line_num, line) in input.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            let (key, value) = line.split_once('=').ok_or_else(|| {
-                format!("Line {}: Format error (expected key=value)", line_num + 1)
-            })?;
-
-            let key = key.trim();
-            let value = value.trim();
-
-            let parse_err = |type_name: &str| {
-                format!(
-                    "Line {}: Invalid {} for key '{}'",
-                    line_num + 1,
-                    type_name,
-                    key
-                )
-            };
-
-            match key {
-                "disable_network_statistics" => {
-                    disable_network_statistics =
-                        Some(FromStr::from_str(value).map_err(|_| parse_err("bool"))?)
-                }
-                "network_interval" => {
-                    network_interval = Some(value.parse().map_err(|_| parse_err("u32"))?)
-                }
-                "reset_day" => {
-                    reset_day = Some(value.parse().map_err(|_| parse_err("u8"))?)
-                }
-                "calibration_tx" => {
-                    calibration_tx = Some(value.parse().map_err(|_| parse_err("u64"))?)
-                }
-                "calibration_rx" => {
-                    calibration_rx = Some(value.parse().map_err(|_| parse_err("u64"))?)
-                }
-                "network_save_path" => network_save_path = Some(value.to_string()),
-                "boot_id" => boot_id = Some(value.to_string()),
-                "boot_source_tx" => boot_source_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "boot_source_rx" => boot_source_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "accumulated_tx" => accumulated_tx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "accumulated_rx" => accumulated_rx = Some(value.parse().map_err(|_| parse_err("u64"))?),
-                "last_reset_month" => last_reset_month = Some(value.parse().map_err(|_| parse_err("u8"))?),
-                _ => {}
-            }
-        }
-
-        // Assemble the struct, check if required fields exist
-        Ok(NetworkInfo {
-            config: NetworkConfig {
-                disable_network_statistics: disable_network_statistics
-                    .ok_or("Missing field: disable_network_statistics")?,
-                network_interval: network_interval.ok_or("Missing field: network_interval")?,
-                reset_day: reset_day.ok_or("Missing field: reset_day")?,
-                calibration_tx: calibration_tx.ok_or("Missing field: calibration_tx")?,
-                calibration_rx: calibration_rx.ok_or("Missing field: calibration_rx")?,
-                network_save_path: network_save_path.ok_or("Missing field: network_save_path")?,
-            },
-            boot_id: boot_id.ok_or("Missing field: boot_id")?,
-            boot_source_tx: boot_source_tx.ok_or("Missing field: boot_source_tx")?,
-            boot_source_rx: boot_source_rx.ok_or("Missing field: boot_source_rx")?,
-            accumulated_tx: accumulated_tx.ok_or("Missing field: accumulated_tx")?,
-            accumulated_rx: accumulated_rx.ok_or("Missing field: accumulated_rx")?,
-            last_reset_month: last_reset_month.ok_or("Missing field: last_reset_month")?,
-        })
-    }
+    // Reset if:
+    // 1. More than 1 month has passed (handles long downtime)
+    // 2. Exactly 1 month has passed and current day >= reset_day
+    months_diff > 1 || current_day >= effective_reset_day
 }
 
-async fn get_or_init_latest_network_info(
-    network_config: &NetworkConfig,
-) -> Result<(File, NetworkInfo), String> {
+async fn get_or_init_runtime_data(
+    runtime_data_path: &PathBuf,
+    reset_day: u8,
+) -> Result<(File, RuntimeData), String> {
     let mut file = match OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&network_config.network_save_path)
+        .open(runtime_data_path)
         .await
     {
         Ok(file) => file,
         Err(e) => {
-            return Err(format!("Failed to open network traffic info file: {e}"));
+            return Err(format!("Failed to open runtime data file: {e}"));
         }
     };
 
@@ -238,142 +144,134 @@ async fn get_or_init_latest_network_info(
     let mut raw_data = String::new();
     file.read_to_string(&mut raw_data)
         .await
-        .map_err(|e| format!("Failed to read network traffic info file: {e}"))?;
+        .map_err(|e| format!("Failed to read runtime data file: {e}"))?;
 
-    let raw_network_info = if raw_data.is_empty() {
-        let network_info = NetworkInfo {
-            config: network_config.clone(),
+    let raw_runtime_data = if raw_data.is_empty() {
+        let runtime_data = RuntimeData {
             boot_id: new_boot_id.clone(),
             boot_source_tx: 0,
             boot_source_rx: 0,
+            current_boot_tx: 0,
+            current_boot_rx: 0,
             accumulated_tx: 0,
             accumulated_rx: 0,
-            last_reset_month: get_current_month(),
+            last_reset_month: calculate_initial_last_reset_month(reset_day),
         };
-        rewrite_network_info_file(&mut file, network_info.encode())
+        rewrite_runtime_data_file(&mut file, &runtime_data)
             .await
-            .map_err(|e| format!("Failed to write network traffic info file: {e}"))?;
-        info!(
-            "Network traffic info file is empty, possibly first run or save path changed, created new file"
-        );
-        network_info
+            .map_err(|e| format!("Failed to write runtime data file: {e}"))?;
+        info!("Runtime data file is empty, created new file");
+        runtime_data
     } else {
-        let raw_network_info = NetworkInfo::decode(&raw_data);
+        let raw_runtime_data = RuntimeData::decode(&raw_data);
 
-        if let Err(e) = &raw_network_info {
+        if let Err(e) = &raw_runtime_data {
             warn!(
-                "Failed to parse network traffic info file: {}. Will recreate the file in 3 seconds.",
+                "Failed to parse runtime data file: {}. Will recreate the file in 3 seconds.",
                 e
             );
             tokio::time::sleep(Duration::from_secs(3)).await;
 
             drop(file);
-            if let Err(e) = tokio::fs::remove_file(&network_config.network_save_path).await {
+            if let Err(e) = tokio::fs::remove_file(runtime_data_path).await {
                 return Err(format!(
-                    "Failed to remove corrupted network traffic info file: {e}"
+                    "Failed to remove corrupted runtime data file: {e}"
                 ));
             }
 
-            file = reopen_network_file(&network_config.network_save_path).await?;
+            file = reopen_runtime_data_file(runtime_data_path).await?;
 
-            let network_info = NetworkInfo {
-                config: network_config.clone(),
+            let runtime_data = RuntimeData {
                 boot_id: new_boot_id.clone(),
                 boot_source_tx: 0,
                 boot_source_rx: 0,
+                current_boot_tx: 0,
+                current_boot_rx: 0,
                 accumulated_tx: 0,
                 accumulated_rx: 0,
-                last_reset_month: get_current_month(),
+                last_reset_month: calculate_initial_last_reset_month(reset_day),
             };
-            rewrite_network_info_file(&mut file, network_info.encode())
+            rewrite_runtime_data_file(&mut file, &runtime_data)
                 .await
-                .map_err(|e| format!("Failed to write network traffic info file: {e}"))?;
-            info!("Recreated network traffic info file");
-            network_info
+                .map_err(|e| format!("Failed to write runtime data file: {e}"))?;
+            info!("Recreated runtime data file");
+            runtime_data
         } else {
-            let raw_network_info = raw_network_info?;
-
-            if &raw_network_info.config != network_config {
-                info!("Network configuration changed, applying new configuration while preserving traffic data");
-                let network_info = NetworkInfo {
-                    config: network_config.clone(),
-                    boot_id: raw_network_info.boot_id,
-                    boot_source_tx: raw_network_info.boot_source_tx,
-                    boot_source_rx: raw_network_info.boot_source_rx,
-                    accumulated_tx: raw_network_info.accumulated_tx,
-                    accumulated_rx: raw_network_info.accumulated_rx,
-                    last_reset_month: raw_network_info.last_reset_month,
-                };
-                rewrite_network_info_file(&mut file, network_info.encode())
-                    .await
-                    .map_err(|e| format!("Failed to write network traffic info file: {e}"))?;
-                info!("Network configuration updated");
-                network_info
-            } else {
-                raw_network_info
-            }
+            raw_runtime_data?
         }
     };
 
     // Handle system reboot: merge current boot traffic into accumulated
-    let new_network_info = if cfg!(target_os = "linux") && !new_boot_id.is_empty() {
-        if raw_network_info.boot_id != new_boot_id {
+    let new_runtime_data = if cfg!(target_os = "linux") && !new_boot_id.is_empty() {
+        if raw_runtime_data.boot_id != new_boot_id {
             info!("System reboot detected, merging traffic data");
-            let network_info = NetworkInfo {
-                config: raw_network_info.config,
+            let runtime_data = RuntimeData {
                 boot_id: new_boot_id,
                 boot_source_tx: 0,  // New boot starts from 0
                 boot_source_rx: 0,
-                // Preserve current period traffic across reboot (but not calibration)
-                accumulated_tx: raw_network_info.accumulated_tx,
-                accumulated_rx: raw_network_info.accumulated_rx,
-                last_reset_month: raw_network_info.last_reset_month,
+                current_boot_tx: 0,  // Clear current boot
+                current_boot_rx: 0,
+                // Merge last boot traffic into accumulated
+                accumulated_tx: raw_runtime_data.accumulated_tx + raw_runtime_data.current_boot_tx,
+                accumulated_rx: raw_runtime_data.accumulated_rx + raw_runtime_data.current_boot_rx,
+                last_reset_month: raw_runtime_data.last_reset_month,
             };
-            rewrite_network_info_file(&mut file, network_info.encode())
+            rewrite_runtime_data_file(&mut file, &runtime_data)
                 .await
-                .map_err(|e| format!("Failed to write network traffic info file: {e}"))?;
-            network_info
+                .map_err(|e| format!("Failed to write runtime data file: {e}"))?;
+            runtime_data
         } else {
-            raw_network_info
+            raw_runtime_data
         }
     } else if cfg!(target_os = "windows") {
         // Windows: always merge on startup as we can't reliably detect reboots
-        let network_info = NetworkInfo {
-            config: raw_network_info.config,
+        let runtime_data = RuntimeData {
             boot_id: new_boot_id,
             boot_source_tx: 0,  // Reset to 0 on each program start
             boot_source_rx: 0,
-            // Preserve accumulated traffic
-            accumulated_tx: raw_network_info.accumulated_tx,
-            accumulated_rx: raw_network_info.accumulated_rx,
-            last_reset_month: raw_network_info.last_reset_month,
+            current_boot_tx: 0,  // Clear current boot
+            current_boot_rx: 0,
+            // Merge last boot traffic into accumulated
+            accumulated_tx: raw_runtime_data.accumulated_tx + raw_runtime_data.current_boot_tx,
+            accumulated_rx: raw_runtime_data.accumulated_rx + raw_runtime_data.current_boot_rx,
+            last_reset_month: raw_runtime_data.last_reset_month,
         };
-        rewrite_network_info_file(&mut file, network_info.encode())
+        rewrite_runtime_data_file(&mut file, &runtime_data)
             .await
-            .map_err(|e| format!("Failed to write network traffic info file: {e}"))?;
-        network_info
+            .map_err(|e| format!("Failed to write runtime data file: {e}"))?;
+        runtime_data
     } else {
-        raw_network_info
+        raw_runtime_data
     };
 
-    Ok((file, new_network_info))
+    Ok((file, new_runtime_data))
 }
 
 pub async fn network_saver(
     tx: tokio::sync::mpsc::Sender<(u64, u64)>,
-    network_config: &NetworkConfig,
+    config: &UserConfig,
 ) {
-    if network_config.disable_network_statistics {
+    if config.disable_network_statistics {
         return;
     }
 
-    let (mut file, mut network_info) = match get_or_init_latest_network_info(&network_config).await
+    // Get runtime data file path
+    let runtime_data_path = match ConfigPath::runtime_data() {
+        Ok(path) => path,
+        Err(e) => {
+            error!("Failed to determine runtime data path: {}", e);
+            warn!("Network statistics disabled due to path error");
+            return;
+        }
+    };
+
+    let (mut file, mut runtime_data) = match get_or_init_runtime_data(&runtime_data_path, config.reset_day).await
     {
         Ok(n) => n,
         Err(e) => {
-            warn!("An error occurred while getting or initing network traffic info: {e}.");
+            warn!("An error occurred while getting or initing runtime data: {e}.");
             warn!(
-                "This will fallback to statistics only showing network interface traffic since the current startup, equivalent to `--disable-network-statistics`."
+                "This will fallback to statistics only showing network interface traffic since the current startup, equivalent to `disable_network_statistics=true`."
             );
             return;
         }
@@ -387,34 +285,30 @@ pub async fn network_saver(
         let (_, _, total_up, total_down) = filter_network(&networks);
 
         // Check if we need to reset traffic based on monthly schedule
-        if should_reset_traffic(network_info.last_reset_month, network_info.config.reset_day) {
+        if should_reset_traffic(runtime_data.last_reset_month, config.reset_day) {
             let current_month = get_current_month();
-            let effective_reset_day = get_effective_reset_day(network_info.config.reset_day);
+            let effective_reset_day = get_effective_reset_day(config.reset_day);
             info!(
                 "Monthly traffic reset triggered (configured day: {}, effective day: {}, current month: {})",
-                network_info.config.reset_day, effective_reset_day, current_month
+                config.reset_day, effective_reset_day, current_month
             );
 
-            // Reset config with calibration cleared
-            let mut new_config = network_info.config.clone();
-            new_config.calibration_tx = 0;
-            new_config.calibration_rx = 0;
-
-            network_info = NetworkInfo {
-                config: new_config,
-                boot_id: network_info.boot_id.clone(),
+            runtime_data = RuntimeData {
+                boot_id: runtime_data.boot_id.clone(),
                 boot_source_tx: total_up,  // Set current system traffic as new baseline
                 boot_source_rx: total_down,
+                current_boot_tx: 0,        // Clear current boot (new period starts)
+                current_boot_rx: 0,
                 accumulated_tx: 0,         // Reset accumulated to 0
                 accumulated_rx: 0,
                 last_reset_month: current_month,
             };
 
             // Immediately save the reset state
-            if let Err(e) = rewrite_network_info_file(&mut file, network_info.encode()).await {
-                error!("Failed to write network traffic info file after reset: {e}");
+            if let Err(e) = rewrite_runtime_data_file(&mut file, &runtime_data).await {
+                error!("Failed to write runtime data file after reset: {e}");
             } else {
-                info!("Traffic statistics reset completed (calibration also reset to 0)");
+                info!("Traffic statistics reset completed");
             }
         }
 
@@ -422,78 +316,57 @@ pub async fn network_saver(
 
         // Periodically save to disk (every 10 intervals by default)
         if save_counter >= 10 {
-            // Merge current boot traffic into accumulated before saving
-            let current_boot_tx = total_up.saturating_sub(network_info.boot_source_tx);
-            let current_boot_rx = total_down.saturating_sub(network_info.boot_source_rx);
+            // Calculate current boot traffic cumulative increment
+            let current_boot_tx = total_up.saturating_sub(runtime_data.boot_source_tx);
+            let current_boot_rx = total_down.saturating_sub(runtime_data.boot_source_rx);
 
-            network_info.accumulated_tx += current_boot_tx;
-            network_info.accumulated_rx += current_boot_rx;
-            network_info.boot_source_tx = total_up;
-            network_info.boot_source_rx = total_down;
+            // Save current boot cumulative increment
+            runtime_data.current_boot_tx = current_boot_tx;
+            runtime_data.current_boot_rx = current_boot_rx;
 
-            if let Err(e) = rewrite_network_info_file(&mut file, network_info.encode()).await {
-                error!("Failed to write network traffic info file: {e}");
+            // boot_source remains unchanged (stays constant during the entire boot period)
+            // accumulated remains unchanged (only modified on reboot or monthly reset)
+
+            if let Err(e) = rewrite_runtime_data_file(&mut file, &runtime_data).await {
+                error!("Failed to write runtime data file: {e}");
             }
             save_counter = 0;
         }
 
         // Calculate current boot traffic for display
-        let current_boot_tx = total_up.saturating_sub(network_info.boot_source_tx);
-        let current_boot_rx = total_down.saturating_sub(network_info.boot_source_rx);
+        let current_boot_tx = total_up.saturating_sub(runtime_data.boot_source_tx);
+        let current_boot_rx = total_down.saturating_sub(runtime_data.boot_source_rx);
 
         // Send total traffic including calibration values to the main loop
-        let total_tx = network_info.accumulated_tx + current_boot_tx + network_info.config.calibration_tx;
-        let total_rx = network_info.accumulated_rx + current_boot_rx + network_info.config.calibration_rx;
+        let total_tx = runtime_data.accumulated_tx + current_boot_tx + config.calibration_tx;
+        let total_rx = runtime_data.accumulated_rx + current_boot_rx + config.calibration_rx;
 
         if let Err(e) = tx.send((total_tx, total_rx)).await {
             error!("Failed to send traffic data: {e}");
         }
 
         tokio::time::sleep(Duration::from_secs(
-            network_info.config.network_interval as u64,
+            config.network_interval as u64,
         ))
         .await;
 
-        // Check for configuration changes (hot reload)
-        // Re-read the config file to detect external changes
-        let mut config_file = match File::open(&network_info.config.network_save_path).await {
-            Ok(f) => f,
-            Err(_) => continue, // If can't open, skip config reload check
-        };
-
-        let mut config_data = String::new();
-        if config_file.read_to_string(&mut config_data).await.is_ok() {
-            if let Ok(updated_info) = NetworkInfo::decode(&config_data) {
-                // Check if calibration values or other settings changed
-                if updated_info.config != network_info.config {
-                    info!("Configuration file changed detected, reloading configuration");
-
-                    // Preserve traffic data but apply new config
-                    network_info.config = updated_info.config.clone();
-
-                    // Save with updated config
-                    if let Err(e) = rewrite_network_info_file(&mut file, network_info.encode()).await {
-                        error!("Failed to save updated configuration: {e}");
-                    } else {
-                        info!("Configuration reloaded successfully");
-                    }
-                }
-            }
-        }
+        // NOTE: Configuration hot-reload has been removed.
+        // Configuration changes now require restarting the service.
     }
 }
 
-async fn rewrite_network_info_file(
+async fn rewrite_runtime_data_file(
     file: &mut File,
-    string: String,
+    runtime_data: &RuntimeData,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let encoded = runtime_data.encode();
     file.set_len(0).await?;
     file.seek(SeekFrom::Start(0)).await?;
-    file.write_all(string.as_bytes()).await?;
+    file.write_all(encoded.as_bytes()).await?;
     Ok(())
 }
 
-async fn reopen_network_file(path: &str) -> Result<File, String> {
+async fn reopen_runtime_data_file(path: &PathBuf) -> Result<File, String> {
     match OpenOptions::new()
         .read(true)
         .write(true)
@@ -503,6 +376,6 @@ async fn reopen_network_file(path: &str) -> Result<File, String> {
         .await
     {
         Ok(file) => Ok(file),
-        Err(e) => Err(format!("Failed to reopen network traffic info file: {e}")),
+        Err(e) => Err(format!("Failed to reopen runtime data file: {e}")),
     }
 }

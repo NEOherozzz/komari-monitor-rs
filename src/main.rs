@@ -10,6 +10,7 @@
 
 use crate::callbacks::handle_callbacks;
 use crate::command_parser::Args;
+use crate::config::{ConfigPath, ConfigReader, UserConfig};
 use crate::data_struct::{BasicInfo, RealTimeInfo};
 use crate::dry_run::dry_run;
 use crate::get_info::network::network_saver::network_saver;
@@ -31,6 +32,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 mod callbacks;
 mod command_parser;
+mod config;
 mod data_struct;
 mod dry_run;
 mod get_info;
@@ -41,7 +43,27 @@ mod utils;
 async fn main() {
     let args = Args::par();
 
-    init_logger(&args.log_level);
+    // Load configuration file
+    let config_path = ConfigPath::user_config(args.config.as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to determine config path: {}", e);
+            exit(1);
+        });
+
+    let config = ConfigReader::load_user_config(&config_path)
+        .unwrap_or_else(|e| {
+            eprintln!("Error loading configuration: {}", e);
+            eprintln!("Please create the configuration file or run 'kagent.sh config' to configure.");
+            exit(1);
+        });
+
+    // Initialize logger with config
+    init_logger(&config.log_level);
+
+    // Set global DURATION variable
+    unsafe {
+        crate::get_info::network::DURATION = config.realtime_info_interval as f64;
+    }
 
     dry_run().await;
 
@@ -49,24 +71,16 @@ async fn main() {
         exit(0);
     }
 
-    let network_config = args.network_config();
-
-    let (http_server, token) = match (args.http_server.clone(), args.token.clone()) {
-        (Some(http_server), Some(token)) => (http_server, token),
-        (_, _) => {
-            error!("The `--http-server` and `--token` parameters must be specified.");
-            exit(1);
-        }
-    };
-
-    for line in args.to_string().lines() {
-        debug!("{line}");
-    }
+    debug!("Configuration loaded from: {}", config_path.display());
+    debug!("HTTP Server: {}", config.http_server);
+    debug!("Token: [REDACTED]");
+    debug!("TLS: {}", config.tls);
+    debug!("Network Statistics: {}", !config.disable_network_statistics);
 
     let connection_urls = build_urls(
-        http_server.as_ref(),
-        args.ws_server.as_ref(),
-        token.as_ref(),
+        &config.http_server,
+        config.ws_server.as_ref(),
+        &config.token,
     )
     .unwrap_or_else(|e| {
         error!("Failed to parse server address: {e}");
@@ -79,12 +93,12 @@ async fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        if !args.disable_toast_notify {
+        if !config.disable_toast_notify {
             use win_toast_notify::{Action, ActivationType, WinToastNotify};
             WinToastNotify::new()
                 .set_title("Komari-monitor-rs Is Running!")
                 .set_messages(vec![
-                    "Komari-monitor-rs is an application used to monitor your system, granting it near-complete access to your computer. If you did not actively install this program, please check your system immediately. If you have intentionally used this software on your system, please ignore this message or add `--disable-toast-notify` to your startup parameters."
+                    "Komari-monitor-rs is an application used to monitor your system, granting it near-complete access to your computer. If you did not actively install this program, please check your system immediately. If you have intentionally used this software on your system, please ignore this message or set `disable_toast_notify=true` in the configuration file."
                 ])
                 .set_actions(vec![
                     Action {
@@ -96,7 +110,7 @@ async fn main() {
                     Action {
                         activation_type: ActivationType::Protocol,
                         action_content: "komari-monitor-rs".to_string(),
-                        arguments: "https://github.com/GenshinMinecraft/komari-monitor-rs".to_string(),
+                        arguments: "https://github.com/NEOherozzz/komari-monitor-rs".to_string(),
                         image_url: None
                     },
                 ])
@@ -108,9 +122,10 @@ async fn main() {
     let (network_saver_tx, mut network_saver_rx): (Sender<(u64, u64)>, Receiver<(u64, u64)>) =
         tokio::sync::mpsc::channel(15);
 
-    if !network_config.disable_network_statistics {
+    if !config.disable_network_statistics {
+        let config_clone = config.clone();
         let _listener = tokio::spawn(async move {
-            network_saver(network_saver_tx, &network_config).await;
+            network_saver(network_saver_tx, &config_clone).await;
         });
     } else {
         info!(
@@ -121,8 +136,8 @@ async fn main() {
     loop {
         let Ok(ws_stream) = connect_ws(
             &connection_urls.ws_real_time,
-            args.tls,
-            args.ignore_unsafe_cert,
+            config.tls,
+            config.ignore_unsafe_cert,
         )
         .await
         else {
@@ -139,12 +154,12 @@ async fn main() {
 
         // Handle callbacks
         {
-            let args_cloned = args.clone();
+            let config_cloned = config.clone();
             let connection_urls_cloned = connection_urls.clone();
             let locked_write_cloned = locked_write.clone();
             let _listener = tokio::spawn(async move {
                 handle_callbacks(
-                    &args_cloned,
+                    &config_cloned,
                     &connection_urls_cloned,
                     &mut read,
                     &locked_write_cloned,
@@ -163,9 +178,9 @@ async fn main() {
         );
         sysinfo_sys.refresh_memory_specifics(MemoryRefreshKind::everything());
 
-        let basic_info = BasicInfo::build(&sysinfo_sys, args.fake, &args.ip_provider).await;
+        let basic_info = BasicInfo::build(&sysinfo_sys, config.fake, &config.ip_provider).await;
 
-        basic_info.push(connection_urls.basic_info.clone(), args.ignore_unsafe_cert);
+        basic_info.push(connection_urls.basic_info.clone(), config.ignore_unsafe_cert);
 
         loop {
             let start_time = tokio::time::Instant::now();
@@ -179,13 +194,13 @@ async fn main() {
             let real_time = RealTimeInfo::build(
                 &sysinfo_sys,
                 &networks,
-                if args.disable_network_statistics {
+                if config.disable_network_statistics {
                     None
                 } else {
                     Some(&mut network_saver_rx)
                 },
                 &disks,
-                args.fake,
+                config.fake,
             );
 
             let json = json::to_string(&real_time);
@@ -202,7 +217,7 @@ async fn main() {
 
             sleep(Duration::from_millis({
                 let end = u64::try_from(end_time.as_millis()).unwrap_or(0);
-                args.realtime_info_interval.saturating_sub(end)
+                config.realtime_info_interval.saturating_sub(end)
             }))
             .await;
         }
