@@ -76,6 +76,15 @@ calibration_tx=0
 # Traffic calibration for download in bytes (default: 0)
 calibration_rx=0
 
+# Traffic counting mode (default: both)
+# Determines which traffic direction counts toward your quota
+# Options:
+#   - both     : Count both upload and download (total = TX + RX)
+#   - tx_only  : Only count upload traffic (for providers that only bill outbound)
+#   - rx_only  : Only count download traffic (for providers that only bill inbound)
+# Example: If your VPS provider only bills outbound traffic, set this to tx_only
+traffic_mode=both
+
 # ==================== Logging Configuration ====================
 # Log level (default: info)
 # Options: error, warn, info, debug, trace

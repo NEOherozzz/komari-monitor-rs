@@ -63,6 +63,33 @@ impl LogLevel {
     }
 }
 
+#[derive(Debug, Clone, ValueEnum, PartialEq)]
+pub enum TrafficMode {
+    Both,
+    TxOnly,
+    RxOnly,
+}
+
+impl TrafficMode {
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "both" => Ok(TrafficMode::Both),
+            "tx_only" => Ok(TrafficMode::TxOnly),
+            "rx_only" => Ok(TrafficMode::RxOnly),
+            _ => Err(format!("Invalid traffic_mode value: {}", s)),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn to_string(&self) -> String {
+        match self {
+            TrafficMode::Both => "both".to_string(),
+            TrafficMode::TxOnly => "tx_only".to_string(),
+            TrafficMode::RxOnly => "rx_only".to_string(),
+        }
+    }
+}
+
 // ==================== User Configuration ====================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,6 +119,7 @@ pub struct UserConfig {
     pub reset_day: u8,
     pub calibration_tx: u64,
     pub calibration_rx: u64,
+    pub traffic_mode: TrafficMode,
 
     // Logging Configuration
     pub log_level: LogLevel,
@@ -116,6 +144,7 @@ impl Default for UserConfig {
             reset_day: 1,
             calibration_tx: 0,
             calibration_rx: 0,
+            traffic_mode: TrafficMode::Both,
             log_level: LogLevel::Info,
         }
     }
@@ -158,6 +187,7 @@ impl UserConfig {
         lines.push(format!("reset_day={}", self.reset_day));
         lines.push(format!("calibration_tx={}", self.calibration_tx));
         lines.push(format!("calibration_rx={}", self.calibration_rx));
+        lines.push(format!("traffic_mode={}", self.traffic_mode.to_string()));
         lines.push(String::new());
 
         lines.push("# ==================== Logging Configuration ====================".to_string());
@@ -213,6 +243,7 @@ impl UserConfig {
                 "reset_day" => config.reset_day = parse_u8(value, key)?,
                 "calibration_tx" => config.calibration_tx = parse_u64(value, key)?,
                 "calibration_rx" => config.calibration_rx = parse_u64(value, key)?,
+                "traffic_mode" => config.traffic_mode = TrafficMode::from_str(value)?,
 
                 // Logging Configuration
                 "log_level" => config.log_level = LogLevel::from_str(value)?,
@@ -472,16 +503,20 @@ impl ConfigReader {
 // ==================== Helper Functions ====================
 
 fn is_root_user() -> bool {
-    env::var("EUID")
-        .unwrap_or_else(|_| "999".to_string())
-        .parse::<i32>()
-        .unwrap_or(999)
-        == 0
-        || env::var("UID")
-            .unwrap_or_else(|_| "999".to_string())
-            .parse::<i32>()
-            .unwrap_or(999)
-            == 0
+    #[cfg(unix)]
+    {
+        // On Unix systems, use geteuid() system call to get effective user ID
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(windows)]
+    {
+        // On Windows, check environment variables or use Windows API
+        // For simplicity, we check if running as SYSTEM or Administrator
+        env::var("USERNAME")
+            .map(|u| u.eq_ignore_ascii_case("SYSTEM") || u.eq_ignore_ascii_case("Administrator"))
+            .unwrap_or(false)
+    }
 }
 
 fn get_default_terminal_entry() -> String {

@@ -1,4 +1,4 @@
-use crate::config::{ConfigPath, RuntimeData, UserConfig};
+use crate::config::{ConfigPath, RuntimeData, TrafficMode, UserConfig};
 use crate::get_info::network::filter_network;
 use log::{error, info, warn};
 use std::fs;
@@ -337,9 +337,16 @@ pub async fn network_saver(
         let current_boot_tx = total_up.saturating_sub(runtime_data.boot_source_tx);
         let current_boot_rx = total_down.saturating_sub(runtime_data.boot_source_rx);
 
-        // Send total traffic including calibration values to the main loop
-        let total_tx = runtime_data.accumulated_tx + current_boot_tx + config.calibration_tx;
-        let total_rx = runtime_data.accumulated_rx + current_boot_rx + config.calibration_rx;
+        // Calculate total traffic including calibration values
+        let base_tx = runtime_data.accumulated_tx + current_boot_tx + config.calibration_tx;
+        let base_rx = runtime_data.accumulated_rx + current_boot_rx + config.calibration_rx;
+
+        // Apply traffic mode to determine what to send to the main loop
+        let (total_tx, total_rx) = match config.traffic_mode {
+            TrafficMode::Both => (base_tx, base_rx),      // Send both TX and RX
+            TrafficMode::TxOnly => (base_tx, 0),          // Only TX counts, set RX to 0
+            TrafficMode::RxOnly => (0, base_rx),          // Only RX counts, set TX to 0
+        };
 
         if let Err(e) = tx.send((total_tx, total_rx)).await {
             error!("Failed to send traffic data: {e}");

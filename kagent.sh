@@ -126,6 +126,123 @@ get_arch() {
 }
 
 #================================================================================
+# 网络数据初始化
+#================================================================================
+# 获取当前系统的网络流量（应用过滤规则，排除虚拟接口）
+get_current_network_traffic() {
+    local total_tx=0
+    local total_rx=0
+
+    # 过滤关键词（与 Rust 代码中的 FILTER_KEYWORDS 一致）
+    local filter_keywords=("br" "cni" "docker" "podman" "flannel" "lo" "veth" "virbr" "vmbr" "tap" "tun" "fwln" "fwpr")
+
+    # 遍历所有网络接口
+    for interface in /sys/class/net/*; do
+        if [ ! -d "$interface" ]; then
+            continue
+        fi
+
+        local if_name=$(basename "$interface")
+        local should_filter=false
+
+        # 检查是否应该过滤此接口
+        for keyword in "${filter_keywords[@]}"; do
+            if [[ "$if_name" == *"$keyword"* ]]; then
+                should_filter=true
+                break
+            fi
+        done
+
+        # 跳过被过滤的接口
+        if [ "$should_filter" = true ]; then
+            continue
+        fi
+
+        # 读取流量统计（如果文件存在）
+        if [ -f "$interface/statistics/tx_bytes" ] && [ -f "$interface/statistics/rx_bytes" ]; then
+            local tx=$(cat "$interface/statistics/tx_bytes" 2>/dev/null || echo "0")
+            local rx=$(cat "$interface/statistics/rx_bytes" 2>/dev/null || echo "0")
+
+            # 确保是数字
+            if [[ "$tx" =~ ^[0-9]+$ ]] && [[ "$rx" =~ ^[0-9]+$ ]]; then
+                total_tx=$((total_tx + tx))
+                total_rx=$((total_rx + rx))
+            fi
+        fi
+    done
+
+    echo "$total_tx $total_rx"
+}
+
+# 计算 last_reset_month
+calculate_last_reset_month() {
+    local reset_day=$1
+    local current_month=$(date +%-m)  # 1-12
+    local current_day=$(date +%-d)    # 1-31
+
+    # 获取当前月份的天数
+    local days_in_month=$(date -d "$(date +%Y-%m-01) +1 month -1 day" +%-d)
+
+    # 计算有效的 reset_day（如果超过当月天数，使用当月最后一天）
+    local effective_reset_day=$reset_day
+    if [ $reset_day -gt $days_in_month ]; then
+        effective_reset_day=$days_in_month
+    fi
+
+    # 如果当前日期 >= reset_day，则 last_reset_month = current_month
+    # 否则 last_reset_month = 上个月
+    if [ $current_day -ge $effective_reset_day ]; then
+        echo $current_month
+    else
+        # 上个月
+        if [ $current_month -eq 1 ]; then
+            echo 12
+        else
+            echo $((current_month - 1))
+        fi
+    fi
+}
+
+# 初始化网络数据文件
+init_network_data() {
+    local reset_day=$1
+
+    # 获取当前系统流量
+    local traffic=$(get_current_network_traffic)
+    local current_tx=$(echo $traffic | cut -d' ' -f1)
+    local current_rx=$(echo $traffic | cut -d' ' -f2)
+
+    # 获取 boot_id（Linux）
+    local boot_id=""
+    if [ -f "/proc/sys/kernel/random/boot_id" ]; then
+        boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null | tr -d '\n')
+    fi
+
+    # 计算 last_reset_month
+    local last_reset_month=$(calculate_last_reset_month "$reset_day")
+
+    # 创建网络数据文件
+    cat > "${NETWORK_DATA_FILE}" <<EOF
+# Komari Monitor Runtime Data
+# This file is automatically managed by the program. Do not modify manually.
+
+boot_id=${boot_id}
+boot_source_tx=${current_tx}
+boot_source_rx=${current_rx}
+current_boot_tx=0
+current_boot_rx=0
+accumulated_tx=0
+accumulated_rx=0
+last_reset_month=${last_reset_month}
+EOF
+
+    log_success "网络数据文件已初始化: ${NETWORK_DATA_FILE}"
+    log_info "  当前系统上传流量: ${current_tx} 字节"
+    log_info "  当前系统下载流量: ${current_rx} 字节"
+    log_info "  流量统计将从此刻开始计算"
+}
+
+#================================================================================
 # 安装功能
 #================================================================================
 cmd_install() {
@@ -143,6 +260,7 @@ cmd_install() {
     RESET_DAY=""
     CALIBRATION_TX=""
     CALIBRATION_RX=""
+    TRAFFIC_MODE=""
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -156,6 +274,7 @@ cmd_install() {
             --reset-day) RESET_DAY="$2"; shift 2;;
             --calibration-tx) CALIBRATION_TX="$2"; shift 2;;
             --calibration-rx) CALIBRATION_RX="$2"; shift 2;;
+            --traffic-mode) TRAFFIC_MODE="$2"; shift 2;;
             *) log_warn "未知参数: $1"; shift 1;;
         esac
     done
@@ -207,6 +326,26 @@ cmd_install() {
         fi
     fi
 
+    if [ -z "$TRAFFIC_MODE" ]; then
+        echo ""
+        echo "请选择流量统计模式:"
+        echo "  1) both     - 双向统计 (上传 + 下载)"
+        echo "  2) tx_only  - 仅统计上传流量 (适用于只计费出站流量的VPS)"
+        echo "  3) rx_only  - 仅统计下载流量 (适用于只计费入站流量的VPS)"
+        read -p "请输入选项 [1-3] (默认: 1): " traffic_mode_choice
+        traffic_mode_choice=${traffic_mode_choice:-1}
+
+        case "$traffic_mode_choice" in
+            1) TRAFFIC_MODE="both" ;;
+            2) TRAFFIC_MODE="tx_only" ;;
+            3) TRAFFIC_MODE="rx_only" ;;
+            *)
+                log_warn "流量统计模式选择无效，使用默认值: both"
+                TRAFFIC_MODE="both"
+                ;;
+        esac
+    fi
+
     # 验证输入
     if [ -z "$HTTP_SERVER" ] || [ -z "$TOKEN" ]; then
         log_error "HTTP 地址和 Token 不能为空"
@@ -224,6 +363,7 @@ cmd_install() {
     echo "  流量重置日期: 每月 $RESET_DAY 号"
     echo "  上传流量校准: $CALIBRATION_TX 字节"
     echo "  下载流量校准: $CALIBRATION_RX 字节"
+    echo "  流量统计模式: $TRAFFIC_MODE"
     echo ""
 
     # 安装依赖
@@ -316,6 +456,10 @@ calibration_tx=${CALIBRATION_TX}
 # Traffic calibration for download in bytes (default: 0)
 calibration_rx=${CALIBRATION_RX}
 
+# Traffic counting mode (default: both)
+# Options: both, tx_only, rx_only
+traffic_mode=${TRAFFIC_MODE}
+
 # ==================== Logging Configuration ====================
 # Log level (default: info)
 # Options: error, warn, info, debug, trace
@@ -342,6 +486,10 @@ EOF
         mkdir -p "${NETWORK_DATA_DIR}"
         log_info "已创建数据目录: ${NETWORK_DATA_DIR}"
     fi
+
+    # 初始化网络数据文件
+    log_info "正在初始化网络流量统计..."
+    init_network_data "${RESET_DAY}"
 
     # 创建 systemd 服务
     cat > ${SERVICE_FILE} <<EOF
@@ -695,8 +843,8 @@ cmd_help() {
     echo -e "${GREEN}可用命令:${NC}"
     echo -e "  ${YELLOW}install${NC}              安装 Komari Agent"
     echo "                       参数: --http-server, --token, --terminal,"
-    echo "                             --reset-day, --calibration-tx, --calibration-rx, 等"
-    echo "                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken --reset-day 5"
+    echo "                             --reset-day, --calibration-tx, --calibration-rx, --traffic-mode, 等"
+    echo "                       示例: sudo kagent.sh install --http-server http://example.com:8080 --token mytoken --reset-day 5 --traffic-mode both"
     echo ""
     echo -e "  ${YELLOW}uninstall${NC}            卸载 Komari Agent"
     echo ""
@@ -726,6 +874,7 @@ cmd_help() {
     echo "  reset_day                流量重置日期（1-31）"
     echo "  calibration_tx           上传流量校准值（字节）"
     echo "  calibration_rx           下载流量校准值（字节）"
+    echo "  traffic_mode             流量统计模式（both/tx_only/rx_only）"
     echo "  log_level                日志级别（error/warn/info/debug/trace）"
     echo ""
     echo -e "${GREEN}文件位置:${NC}"
