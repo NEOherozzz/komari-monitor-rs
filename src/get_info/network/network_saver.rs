@@ -1,4 +1,4 @@
-use crate::config::{ConfigPath, RuntimeData, TrafficMode, UserConfig};
+use crate::config::{ConfigPath, ConfigReader, RuntimeData, TrafficMode, UserConfig};
 use crate::get_info::network::filter_network;
 use log::{error, info, warn};
 use std::fs;
@@ -250,6 +250,7 @@ async fn get_or_init_runtime_data(
 pub async fn network_saver(
     tx: tokio::sync::mpsc::Sender<(u64, u64)>,
     config: &UserConfig,
+    config_path: &PathBuf,
 ) {
     if config.disable_network_statistics {
         return;
@@ -309,6 +310,39 @@ pub async fn network_saver(
                 error!("Failed to write runtime data file after reset: {e}");
             } else {
                 info!("Traffic statistics reset completed");
+            }
+
+            // Clear calibration values in config file
+            if config.calibration_tx != 0 || config.calibration_rx != 0 {
+                info!("Clearing calibration values in config file");
+
+                // Load current config
+                match ConfigReader::load_user_config(config_path) {
+                    Ok(mut user_config) => {
+                        // Clear calibration values
+                        user_config.calibration_tx = 0;
+                        user_config.calibration_rx = 0;
+
+                        // Save back to config file
+                        match ConfigReader::save_user_config(config_path, &user_config) {
+                            Ok(_) => {
+                                info!("Calibration values cleared in config file");
+                                info!("To set new calibration: edit {} and restart service",
+                                      config_path.display());
+                            }
+                            Err(e) => {
+                                error!("Failed to update config file: {}", e);
+                                warn!("Please manually set calibration_tx=0 and calibration_rx=0 in {}",
+                                      config_path.display());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to load config file for calibration reset: {}", e);
+                        warn!("Please manually set calibration_tx=0 and calibration_rx=0 in {}",
+                              config_path.display());
+                    }
+                }
             }
         }
 

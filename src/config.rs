@@ -447,7 +447,6 @@ impl ConfigReader {
     }
 
     /// Save user configuration file
-    #[allow(dead_code)]
     pub fn save_user_config(path: &PathBuf, config: &UserConfig) -> Result<(), String> {
         let content = config.encode();
 

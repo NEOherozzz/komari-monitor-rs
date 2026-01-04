@@ -71,9 +71,12 @@ reset_day=1
 # Traffic calibration for upload in bytes (default: 0)
 # Use this to align with your VPS provider's traffic statistics
 # Example: If provider shows 50GB used, but agent shows 0GB, set this to 53687091200 (50GB in bytes)
+# NOTE: This value will be automatically reset to 0 on monthly reset day.
+# After monthly reset, edit this value and restart service to set new calibration.
 calibration_tx=0
 
 # Traffic calibration for download in bytes (default: 0)
+# NOTE: This value will be automatically reset to 0 on monthly reset day.
 calibration_rx=0
 
 # Traffic counting mode (default: both)

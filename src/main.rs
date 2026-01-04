@@ -124,8 +124,9 @@ async fn main() {
 
     if !config.disable_network_statistics {
         let config_clone = config.clone();
+        let config_path_clone = config_path.clone();
         let _listener = tokio::spawn(async move {
-            network_saver(network_saver_tx, &config_clone).await;
+            network_saver(network_saver_tx, &config_clone, &config_path_clone).await;
         });
     } else {
         info!(
