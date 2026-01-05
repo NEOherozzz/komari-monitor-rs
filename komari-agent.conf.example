@@ -65,7 +65,21 @@ network_interval=10
 
 # Day of month to reset traffic statistics (default: 1)
 # Valid range: 1-31
-# If the day exceeds the month's days (e.g., 31 in February), uses last day of month
+# 
+# IMPORTANT: Traffic resets ON the specified day (anytime from 00:00 to 23:59)
+# - reset_day=1  : Resets on the 1st of each month
+# - reset_day=5  : Resets on the 5th of each month
+# - reset_day=15 : Resets on the 15th of each month (good for mid-month billing cycles)
+# - reset_day=31 : Resets on the last day of each month
+#
+# Smart month-end handling:
+# - If the day exceeds the month's days (e.g., 31 in February), uses last day of month
+# - reset_day=31 in January → resets on 31st
+# - reset_day=31 in February → resets on 28th (or 29th in leap years)
+# - reset_day=31 in April → resets on 30th
+#
+# The program checks every network_interval seconds (default: 10s) to see if it's time to reset.
+# The exact moment of reset depends on when the check occurs on the reset day.
 reset_day=1
 
 # Traffic calibration for upload in bytes (default: 0)
