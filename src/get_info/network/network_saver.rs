@@ -61,15 +61,44 @@ fn get_days_in_current_month() -> u8 {
 }
 
 /// Get the effective reset day for the current month
-/// If reset_day is greater than the number of days in the month, use the last day of the month
+///
+/// This function ensures the reset_day is valid for the current month by
+/// automatically adjusting to the last day of the month if needed.
+///
+/// **Month-End Smart Handling:**
+/// - If reset_day <= days in current month: Use reset_day as-is
+/// - If reset_day > days in current month: Use the last day of the month
+///
+/// **Examples:**
+/// - reset_day=15 in any month → effective=15 (always valid)
+/// - reset_day=31 in January (31 days) → effective=31
+/// - reset_day=31 in February (28 days) → effective=28 (February's last day)
+/// - reset_day=31 in April (30 days) → effective=30 (April's last day)
+/// - reset_day=30 in February (28 days) → effective=28 (February's last day)
+///
+/// This allows users to set reset_day=31 to always reset on the last day of each month,
+/// regardless of how many days that month has.
 fn get_effective_reset_day(reset_day: u8) -> u8 {
     let days_in_month = get_days_in_current_month();
     reset_day.min(days_in_month)
 }
 
 /// Calculate last_reset_month for initial setup
-/// If current day >= reset_day, the reset day has passed this month, so last_reset_month = current_month
-/// If current day < reset_day, the reset day hasn't arrived this month, so last_reset_month = previous_month
+///
+/// This function determines when the last reset occurred based on the current date
+/// and the configured reset_day.
+///
+/// **Reset Timing Logic:**
+/// - Traffic resets happen ON the reset_day (anytime during that day, from 00:00 to 23:59)
+/// - If current_day >= reset_day: The reset has already occurred this month
+///   → Set last_reset_month = current_month (reset happened this month)
+/// - If current_day < reset_day: The reset hasn't happened yet this month
+///   → Set last_reset_month = previous_month (last reset was previous month)
+///
+/// **Example:** If reset_day=5
+/// - On Jan 4: current_day (4) < reset_day (5), so last_reset_month = December
+/// - On Jan 5: current_day (5) >= reset_day (5), so last_reset_month = January (reset happens!)
+/// - On Jan 6+: current_day > reset_day (5), so last_reset_month = January (already reset)
 fn calculate_initial_last_reset_month(reset_day: u8) -> u8 {
     let current_month = get_current_month();
     let current_day = get_current_day();
@@ -89,6 +118,26 @@ fn calculate_initial_last_reset_month(reset_day: u8) -> u8 {
 }
 
 /// Check if traffic should be reset based on current date and reset configuration
+///
+/// **Reset Timing Behavior:**
+/// Traffic resets occur when BOTH conditions are met:
+/// 1. A new month has started (current_month != last_reset_month)
+/// 2. The reset day has arrived (current_day >= effective_reset_day)
+///
+/// **Important:** The reset happens ON the reset_day itself (anywhere from 00:00 to 23:59),
+/// NOT before it and NOT the day after. The exact moment depends on when the program
+/// checks (every network_interval seconds, default 10 seconds).
+///
+/// **Examples:**
+/// - reset_day=1: Resets on the 1st of each month (standard monthly reset)
+/// - reset_day=15: Resets on the 15th of each month (mid-month reset)
+/// - reset_day=31: Resets on the 31st in long months, on the last day in shorter months
+///   - January 31: resets on 31st
+///   - February 28/29: resets on last day (28th or 29th in leap years)
+///   - April 30: resets on 30th (April only has 30 days)
+///
+/// **Special case:** If months_diff > 1 (system was down for >1 month), reset immediately
+/// regardless of current_day, to handle long downtime scenarios.
 fn should_reset_traffic(last_reset_month: u8, reset_day: u8) -> bool {
     let current_month = get_current_month();
     let current_day = get_current_day();
