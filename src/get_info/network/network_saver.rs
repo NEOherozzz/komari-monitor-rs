@@ -281,17 +281,58 @@ pub async fn network_saver(
     let mut networks = Networks::new_with_refreshed_list();
     let mut save_counter = 0u32; // Counter for periodic disk writes
 
+    // Keep a local copy of config for hot-reload
+    let mut current_config = config.clone();
+
     loop {
+        // Hot-reload configuration from file
+        match ConfigReader::load_user_config(config_path) {
+            Ok(new_config) => {
+                // Check if network-related settings have changed
+                let config_changed =
+                    current_config.reset_day != new_config.reset_day ||
+                    current_config.calibration_tx != new_config.calibration_tx ||
+                    current_config.calibration_rx != new_config.calibration_rx ||
+                    current_config.network_interval != new_config.network_interval ||
+                    current_config.traffic_mode != new_config.traffic_mode;
+
+                if config_changed {
+                    info!("Configuration file changes detected, reloading network settings");
+
+                    if current_config.reset_day != new_config.reset_day {
+                        info!("  reset_day: {} -> {}", current_config.reset_day, new_config.reset_day);
+                    }
+                    if current_config.calibration_tx != new_config.calibration_tx {
+                        info!("  calibration_tx: {} -> {}", current_config.calibration_tx, new_config.calibration_tx);
+                    }
+                    if current_config.calibration_rx != new_config.calibration_rx {
+                        info!("  calibration_rx: {} -> {}", current_config.calibration_rx, new_config.calibration_rx);
+                    }
+                    if current_config.network_interval != new_config.network_interval {
+                        info!("  network_interval: {}s -> {}s", current_config.network_interval, new_config.network_interval);
+                    }
+                    if current_config.traffic_mode != new_config.traffic_mode {
+                        info!("  traffic_mode: {:?} -> {:?}", current_config.traffic_mode, new_config.traffic_mode);
+                    }
+
+                    current_config = new_config;
+                }
+            }
+            Err(e) => {
+                warn!("Failed to reload configuration file: {}, using cached config", e);
+            }
+        }
+
         networks.refresh(true);
         let (_, _, total_up, total_down) = filter_network(&networks);
 
         // Check if we need to reset traffic based on monthly schedule
-        if should_reset_traffic(runtime_data.last_reset_month, config.reset_day) {
+        if should_reset_traffic(runtime_data.last_reset_month, current_config.reset_day) {
             let current_month = get_current_month();
-            let effective_reset_day = get_effective_reset_day(config.reset_day);
+            let effective_reset_day = get_effective_reset_day(current_config.reset_day);
             info!(
                 "Monthly traffic reset triggered (configured day: {}, effective day: {}, current month: {})",
-                config.reset_day, effective_reset_day, current_month
+                current_config.reset_day, effective_reset_day, current_month
             );
 
             runtime_data = RuntimeData {
@@ -313,7 +354,7 @@ pub async fn network_saver(
             }
 
             // Clear calibration values in config file
-            if config.calibration_tx != 0 || config.calibration_rx != 0 {
+            if current_config.calibration_tx != 0 || current_config.calibration_rx != 0 {
                 info!("Clearing calibration values in config file");
 
                 // Load current config
@@ -327,8 +368,9 @@ pub async fn network_saver(
                         match ConfigReader::save_user_config(config_path, &user_config) {
                             Ok(_) => {
                                 info!("Calibration values cleared in config file");
-                                info!("To set new calibration: edit {} and restart service",
-                                      config_path.display());
+                                // Update local config immediately
+                                current_config.calibration_tx = 0;
+                                current_config.calibration_rx = 0;
                             }
                             Err(e) => {
                                 error!("Failed to update config file: {}", e);
@@ -372,11 +414,11 @@ pub async fn network_saver(
         let current_boot_rx = total_down.saturating_sub(runtime_data.boot_source_rx);
 
         // Calculate total traffic including calibration values
-        let base_tx = runtime_data.accumulated_tx + current_boot_tx + config.calibration_tx;
-        let base_rx = runtime_data.accumulated_rx + current_boot_rx + config.calibration_rx;
+        let base_tx = runtime_data.accumulated_tx + current_boot_tx + current_config.calibration_tx;
+        let base_rx = runtime_data.accumulated_rx + current_boot_rx + current_config.calibration_rx;
 
         // Apply traffic mode to determine what to send to the main loop
-        let (total_tx, total_rx) = match config.traffic_mode {
+        let (total_tx, total_rx) = match current_config.traffic_mode {
             TrafficMode::Both => (base_tx, base_rx),      // Send both TX and RX
             TrafficMode::TxOnly => (base_tx, 0),          // Only TX counts, set RX to 0
             TrafficMode::RxOnly => (0, base_rx),          // Only RX counts, set TX to 0
@@ -387,12 +429,12 @@ pub async fn network_saver(
         }
 
         tokio::time::sleep(Duration::from_secs(
-            config.network_interval as u64,
+            current_config.network_interval as u64,
         ))
         .await;
 
-        // NOTE: Configuration hot-reload has been removed.
-        // Configuration changes now require restarting the service.
+        // Configuration hot-reload is enabled
+        // Changes to network settings will be automatically applied in the next iteration
     }
 }
 
