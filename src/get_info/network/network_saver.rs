@@ -65,6 +65,10 @@ fn get_days_in_current_month() -> u8 {
 /// This function ensures the reset_day is valid for the current month by
 /// automatically adjusting to the last day of the month if needed.
 ///
+/// **Important**: The reset_day parameter is already validated and clamped to 1-31
+/// in the configuration parser (config.rs), so this function only needs to handle
+/// month-end adjustments.
+///
 /// **Month-End Smart Handling:**
 /// - If reset_day <= days in current month: Use reset_day as-is
 /// - If reset_day > days in current month: Use the last day of the month
